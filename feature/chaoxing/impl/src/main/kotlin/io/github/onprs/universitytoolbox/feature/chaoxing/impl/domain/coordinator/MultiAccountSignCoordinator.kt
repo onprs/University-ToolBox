@@ -15,6 +15,7 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.Chaoxi
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.NoOpChaoxingAuditSink
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingActiveDetail
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingRemoteDataSource
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.device.ChaoxingDeviceIdentityHelper
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.ratelimit.ChaoxingRateLimitCoordinator
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.sign.SignAccountIdentity
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.sign.SignExecutionRequest
@@ -41,10 +42,12 @@ data class BatchSignSummary(val activeId: Long, val reports: List<AccountSignRep
 /**
  * 多账号批量签到与风控限流协调器。
  * - 按 `LicenseCoordinator` 校验工具授权及子账号并发配额；
+ * - 为每个账号携带独立或统一绑定的 `deviceCode` 与专属客户端 `User-Agent`；
  * - 对同一课程活动按顺序注入随机抖动延迟并消耗令牌桶配额；
- * - 持久化详细本地签到审计记录与全局脱敏摘要日志。
+ * - 支持在会话过期时自动重登续期重试，并持久化详细本地签到审计记录。
  */
 @Singleton
+@Suppress("LongParameterList")
 class MultiAccountSignCoordinator @Inject constructor(
     private val accountDao: ChaoxingAccountDao,
     private val courseDao: ChaoxingCourseDao,
@@ -55,7 +58,9 @@ class MultiAccountSignCoordinator @Inject constructor(
     private val licenseCoordinator: LicenseCoordinator,
     private val timeProvider: TimeProvider,
     private val auditSink: ChaoxingAuditSink = NoOpChaoxingAuditSink,
+    private val sessionBridge: ChaoxingAccountSessionBridge = NoOpChaoxingAccountSessionBridge,
 ) {
+
     /**
      * 对指定账号集合执行签到或签退（单账号时 `targetAccountIds` 仅含一个 ID）。
      */
@@ -69,12 +74,7 @@ class MultiAccountSignCoordinator @Inject constructor(
         if (!licenseCoordinator.canAccess(CHAOXING_TOOL_ID, LicenseTier.STANDARD)) {
             val denial = SignExecutionResult.QuotaRestricted("当前授权未解锁学习通辅助功能")
             val deniedReports = targetAccountIds.map { id ->
-                AccountSignReport(
-                    accountId = id,
-                    maskedAccount = id,
-                    displayName = "",
-                    result = denial,
-                )
+                AccountSignReport(accountId = id, maskedAccount = id, displayName = "", result = denial)
             }
             return BatchSignSummary(activeId = request.activeId, reports = deniedReports)
         }
@@ -108,21 +108,14 @@ class MultiAccountSignCoordinator @Inject constructor(
             }
 
             rateLimitCoordinator.awaitAccountTurn(index)
-            val resolvedRequest = resolveCourseContextForAccount(account, request)
-            val execResult = strategyDispatcher.dispatch(
-                account = account.toIdentity(),
+            val readyAccount = ensureDeviceReady(account)
+            val resolvedRequest = resolveCourseContextForAccount(readyAccount, request)
+            val execResult = dispatchWithRecovery(
+                account = readyAccount,
                 request = resolvedRequest,
                 prefetchedDetail = if (index == 0) prefetchedDetail else null,
             )
-
-            if (execResult is SignExecutionResult.SessionExpired) {
-                accountDao.updateSessionStatus(
-                    accountId = account.accountId,
-                    sessionStatus = ChaoxingAccountManager.SESSION_EXPIRED,
-                    verifiedAtMs = timeProvider.currentTimeMillis(),
-                )
-            }
-            reports += reportAndRecord(account, courseName, activityTitle, resolvedRequest, execResult)
+            reports += reportAndRecord(readyAccount, courseName, activityTitle, resolvedRequest, execResult)
         }
 
         auditSink.recordSummary(
@@ -131,6 +124,80 @@ class MultiAccountSignCoordinator @Inject constructor(
             summary = "活动 ${request.activeId} 共处理 ${reports.size} 个账号",
         )
         return BatchSignSummary(activeId = request.activeId, reports = reports)
+    }
+
+    private suspend fun dispatchWithRecovery(
+        account: ChaoxingAccountEntity,
+        request: SignExecutionRequest,
+        prefetchedDetail: ChaoxingActiveDetail?,
+    ): SignExecutionResult {
+        var result = strategyDispatcher.dispatch(
+            account = account.toIdentity(),
+            request = request,
+            prefetchedDetail = prefetchedDetail,
+        )
+        if (result is SignExecutionResult.SessionExpired &&
+            sessionBridge.repairSessionIfPossible(account.accountId)
+        ) {
+            result = strategyDispatcher.dispatch(account = account.toIdentity(), request = request)
+        }
+        if (result is SignExecutionResult.DuplicateDeviceCode && !account.isPrimary) {
+            val rotatedCode = rotateAccountDeviceCode(account)
+            val rotatedAccount = account.copy(deviceCode = rotatedCode, isUnifiedDeviceCode = false)
+            result = strategyDispatcher.dispatch(account = rotatedAccount.toIdentity(), request = request)
+        }
+        if (result is SignExecutionResult.SessionExpired) {
+            accountDao.updateSessionStatus(
+                accountId = account.accountId,
+                sessionStatus = ChaoxingAccountManager.SESSION_EXPIRED,
+                verifiedAtMs = timeProvider.currentTimeMillis(),
+            )
+        }
+        return result
+    }
+
+    private suspend fun ensureDeviceReady(account: ChaoxingAccountEntity): ChaoxingAccountEntity {
+        if (account.deviceCode.isNotBlank()) {
+            return account
+        }
+        val viaBridge = sessionBridge.ensureAccountDeviceIdentity(account)
+        if (viaBridge.deviceCode.isNotBlank()) {
+            return viaBridge
+        }
+        val generatedCode = ChaoxingDeviceIdentityHelper.generateRandomDeviceCode()
+        val uniqueId = account.clientUniqueId.ifBlank { ChaoxingDeviceIdentityHelper.generateUniqueId() }
+        val model = account.deviceModel.ifBlank { ChaoxingDeviceIdentityHelper.randomMainstreamDeviceModel() }
+        accountDao.updateDeviceIdentity(
+            accountId = account.accountId,
+            deviceCode = generatedCode,
+            isUnified = false,
+            uniqueId = uniqueId,
+            deviceModel = model,
+        )
+        return account.copy(
+            deviceCode = generatedCode,
+            isUnifiedDeviceCode = false,
+            clientUniqueId = uniqueId,
+            deviceModel = model,
+        )
+    }
+
+    private suspend fun rotateAccountDeviceCode(account: ChaoxingAccountEntity): String {
+        val viaBridge = sessionBridge.rotateRandomDeviceCode(account.accountId)
+        if (viaBridge.isNotBlank()) {
+            return viaBridge
+        }
+        val rotated = ChaoxingDeviceIdentityHelper.generateRandomDeviceCode()
+        val uniqueId = account.clientUniqueId.ifBlank { ChaoxingDeviceIdentityHelper.generateUniqueId() }
+        val model = account.deviceModel.ifBlank { ChaoxingDeviceIdentityHelper.randomMainstreamDeviceModel() }
+        accountDao.updateDeviceIdentity(
+            accountId = account.accountId,
+            deviceCode = rotated,
+            isUnified = false,
+            uniqueId = uniqueId,
+            deviceModel = model,
+        )
+        return rotated
     }
 
     private suspend fun resolveCourseContextForAccount(
@@ -198,13 +265,22 @@ class MultiAccountSignCoordinator @Inject constructor(
         else -> "NORMAL"
     }
 
-    private fun ChaoxingAccountEntity.toIdentity(): SignAccountIdentity = SignAccountIdentity(
-        accountId = accountId,
-        uid = uid,
-        fid = fid,
-        maskedAccount = maskedAccount,
-        displayName = displayName,
-    )
+    private fun ChaoxingAccountEntity.toIdentity(): SignAccountIdentity {
+        val ua = if (deviceModel.isNotBlank() || clientUniqueId.isNotBlank()) {
+            ChaoxingDeviceIdentityHelper.buildClientUserAgent(deviceModel, clientUniqueId)
+        } else {
+            null
+        }
+        return SignAccountIdentity(
+            accountId = accountId,
+            uid = uid,
+            fid = fid,
+            maskedAccount = maskedAccount,
+            displayName = displayName,
+            deviceCode = deviceCode,
+            clientUserAgent = ua,
+        )
+    }
 
     private fun SignExecutionResult.toRecordSummary(): Pair<String, String> = when (this) {
         is SignExecutionResult.Success -> "SUCCESS" to message
@@ -213,6 +289,7 @@ class MultiAccountSignCoordinator @Inject constructor(
         is SignExecutionResult.RequiresExtraInput -> "MISSING_INPUT" to message
         is SignExecutionResult.SessionExpired -> "SESSION_EXPIRED" to message
         is SignExecutionResult.QuotaRestricted -> "QUOTA_RESTRICTED" to message
+        is SignExecutionResult.DuplicateDeviceCode -> "DUPLICATE_DEVICE" to message
         is SignExecutionResult.Rejected -> "REJECTED" to message
         is SignExecutionResult.Failed -> "FAILED" to error.message
     }

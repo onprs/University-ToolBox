@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.onprs.universitytoolbox.core.common.result.AppResult
+import io.github.onprs.universitytoolbox.core.license.api.AccessDecision
 import io.github.onprs.universitytoolbox.core.license.api.LicenseCoordinator
 import io.github.onprs.universitytoolbox.core.license.api.LicenseTier
 import io.github.onprs.universitytoolbox.core.update.RemoteGovernanceRepository
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
@@ -33,8 +35,13 @@ class ChaoxingDashboardViewModel @Inject constructor(
     private val showArchived = MutableStateFlow(false)
     private val isLoadingCourses = MutableStateFlow(false)
     private val errorMessage = MutableStateFlow<String?>(null)
+    private val autoSyncedAccountIds = LinkedHashSet<String>()
 
     private val accountsFlow = accountManager.observeAccounts()
+
+    init {
+        observeInitialCourseSync()
+    }
 
     @OptIn(ExperimentalCoroutinesApi::class)
     private val coursesFlow: StateFlow<List<ChaoxingCourseEntity>> =
@@ -118,6 +125,39 @@ class ChaoxingDashboardViewModel @Inject constructor(
 
     fun refreshCourses() {
         val accountId = uiState.value.selectedAccount?.accountId ?: return
+        syncCoursesForAccount(accountId)
+    }
+
+    private fun observeInitialCourseSync() {
+        viewModelScope.launch {
+            combine(
+                licenseCoordinator.state,
+                remoteGovernanceRepository.disabledTools,
+                accountsFlow,
+                selectedAccountId,
+            ) { _, disabledMap, accounts, explicitId ->
+                val granted = licenseCoordinator.evaluateAccess(
+                    target = SimpleChaoxingTarget,
+                    isRemoteDisabled = CHAOXING_TOOL_ID in disabledMap,
+                ) is AccessDecision.Granted
+                val activeAccount = accounts.firstOrNull { it.accountId == explicitId } ?: accounts.firstOrNull()
+                if (granted && activeAccount?.sessionStatus == ChaoxingAccountManager.SESSION_ACTIVE) {
+                    activeAccount.accountId
+                } else {
+                    null
+                }
+            }.distinctUntilChanged().collect { activeId ->
+                if (activeId != null && activeId !in autoSyncedAccountIds) {
+                    autoSyncedAccountIds += activeId
+                    if (!accountManager.hasCachedCourses(activeId)) {
+                        syncCoursesForAccount(activeId)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun syncCoursesForAccount(accountId: String) {
         if (isLoadingCourses.value) {
             return
         }

@@ -187,6 +187,27 @@ class AppNavigationGateTest {
         assertEquals(listOf<NavKey>(HomeNavKey), (relockedToUnlocked.phase as GateUiPhase.Unlocked).backStack)
     }
 
+    @Test
+    fun `chaoxing bind deep link queues while locked and opens accounts with payload after unlock`() {
+        val initialLocked = LicenseState.Locked(LockReason.NOT_ACTIVATED, "CHALLENGE-BIND")
+        val fakeEngine = FakeLicenseEngine(initialLocked)
+        val gate = createGate(fakeEngine)
+        gate.syncState(initialLocked, emptyMap())
+
+        val shareUri = "universitytoolbox://chaoxing-bind?phone=13800138000&pwd=enc_pwd&dc=UNIFIED_DC"
+        val lockedUpdate = gate.handleDeepLink(shareUri)
+        val lockedPhase = lockedUpdate.phase as GateUiPhase.Locked
+        assertEquals(CHAOXING_TOOL_ID, lockedPhase.blockedToolId)
+
+        val standardState = LicenseState.Unlocked(entitlement(LicenseTier.STANDARD))
+        fakeEngine.emitState(standardState)
+        val unlockedUpdate = gate.syncState(standardState, emptyMap())
+        assertEquals(
+            listOf<NavKey>(HomeNavKey, ChaoxingNavKey.Accounts(initialSharePayload = shareUri)),
+            (unlockedUpdate.phase as GateUiPhase.Unlocked).backStack,
+        )
+    }
+
     private fun createGate(engine: FakeLicenseEngine): AppNavigationGate {
         val coordinator = LicenseCoordinator(
             licenseEngine = engine,

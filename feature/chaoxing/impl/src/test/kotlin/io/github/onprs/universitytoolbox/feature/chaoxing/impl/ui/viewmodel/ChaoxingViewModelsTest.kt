@@ -35,6 +35,9 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.Acco
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.InMemoryAccountCookieStorage
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.ChaoxingAccountManager
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.MultiAccountSignCoordinator
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.ChaoxingLocationService
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.GeoPoint
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.ResolvedPlace
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.ratelimit.ChaoxingRateLimitCoordinator
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.ratelimit.JitterStrategy
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.ratelimit.TokenBucketRateLimiter
@@ -251,10 +254,13 @@ class ChaoxingViewModelsTest {
         val viewModel = ChaoxingSignExecutionViewModel(
             route = ChaoxingNavKey.SignExecution("cx_1", 2001L, 1001L, 7001L),
             accountDao = database.accountDao(),
+            presetLocationDao = database.presetLocationDao(),
             remoteDataSource = remote,
             signCoordinator = signCoordinator,
             licenseCoordinator = licenseCoordinator,
             barcodeScanner = dummyScanner,
+            locationService = FakeLocationService(),
+            timeProvider = TimeProvider { FIXED_NOW_MS },
         )
 
         val detailLoaded = viewModel.uiState.first { it.detail != null }
@@ -273,29 +279,158 @@ class ChaoxingViewModelsTest {
         assertTrue(firstReport?.result is SignExecutionResult.Success)
     }
 
+    @Test
+    fun `first account login emits navigate event and dashboard auto syncs empty courses`() = runTest {
+        licenseEngine.setUnlocked(LicenseTier.STANDARD, maxSubAccounts = 2)
+        val accountsVm = ChaoxingAccountsViewModel(accountManager, authRemote, licenseCoordinator)
+
+        accountsVm.events.test {
+            accountsVm.updateAccountInput("13800138001")
+            accountsVm.updatePasswordInput("pass123")
+            accountsVm.submitPasswordLogin()
+            val firstEvent = awaitItem()
+            assertEquals(ChaoxingAccountsUiEvent.FirstAccountBound("cx_9001"), firstEvent)
+
+            // 绑定第二个账号时不应再次发出首个账号导航事件
+            accountsVm.updateAccountInput("13800138002")
+            accountsVm.updatePasswordInput("pass456")
+            accountsVm.submitPasswordLogin()
+            expectNoEvents()
+            cancelAndIgnoreRemainingEvents()
+        }
+
+        val dashboardVm = ChaoxingDashboardViewModel(accountManager, licenseCoordinator, governanceRepo)
+        val syncedState = dashboardVm.uiState.first { it.courses.isNotEmpty() }
+        assertEquals("自动同步示例课程", syncedState.courses.first().name)
+    }
+
+    @Test
+    fun `location sign supports preset saving selection map picking and current device location`() = runTest {
+        licenseEngine.setUnlocked(LicenseTier.STANDARD, maxSubAccounts = 1)
+        database.accountDao().upsert(sampleAccount("cx_1", isPrimary = true))
+
+        val dummyScanner = object : BarcodeScanner {
+            override suspend fun scanImageUri(uri: Uri): AppResult<List<BarcodeScanResult>> =
+                AppResult.Success(emptyList())
+
+            override suspend fun scanBitmap(bitmap: Bitmap): AppResult<List<BarcodeScanResult>> =
+                AppResult.Success(emptyList())
+        }
+        val viewModel = ChaoxingSignExecutionViewModel(
+            route = ChaoxingNavKey.SignExecution("cx_1", 2001L, 1001L, 7002L),
+            accountDao = database.accountDao(),
+            presetLocationDao = database.presetLocationDao(),
+            remoteDataSource = remote,
+            signCoordinator = signCoordinator,
+            licenseCoordinator = licenseCoordinator,
+            barcodeScanner = dummyScanner,
+            locationService = FakeLocationService(),
+            timeProvider = TimeProvider { FIXED_NOW_MS },
+        )
+
+        viewModel.uiState.first { it.detail != null }
+        // 活动未公开坐标时调用 applyTargetCourseLocation 应引导打开预设坐标面板
+        viewModel.applyTargetCourseLocation()
+        assertTrue(viewModel.uiState.value.isPresetSheetOpen)
+
+        // 保存预设并填入
+        viewModel.savePresetLocation("三教201", 40.008500, 116.332100, "海淀区第三教学楼")
+        val afterPresetSaved = viewModel.uiState.first { it.presetLocations.isNotEmpty() }
+        assertEquals("40.008500", afterPresetSaved.latitudeInput)
+        assertEquals("116.332100", afterPresetSaved.longitudeInput)
+
+        // 从地图选点确认回填
+        viewModel.confirmMapSelection(GeoPoint(40.012345, 116.345678), "东区操场")
+        assertEquals("40.012345", viewModel.uiState.value.latitudeInput)
+        assertEquals("东区操场", viewModel.uiState.value.addressInput)
+
+        // 重新应用预设地点
+        viewModel.applyPresetLocation(afterPresetSaved.presetLocations.first())
+        assertEquals("40.008500", viewModel.uiState.value.latitudeInput)
+        assertEquals("海淀区第三教学楼", viewModel.uiState.value.addressInput)
+
+        // 设备当前定位回填
+        viewModel.useCurrentDeviceLocation(jumpInMap = false)
+        assertEquals("39.915119", viewModel.uiState.value.latitudeInput)
+        assertEquals("116.403963", viewModel.uiState.value.longitudeInput)
+    }
+
     private fun configureServer() {
+        var nextUid = 9001L
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when {
-                request.target.startsWith("/v2/apis/active/getPPTActiveInfo") -> MockResponse.Builder()
+                request.target.startsWith("/fanyalogin") -> MockResponse.Builder()
+                    .code(HTTP_OK)
+                    .addHeader("Set-Cookie", "UID=$nextUid; Domain=.localhost; Path=/")
+                    .addHeader("Set-Cookie", "_d=1700; Domain=.localhost; Path=/")
+                    .addHeader("Set-Cookie", "vc3=vc_tok; Domain=.localhost; Path=/")
+                    .addHeader("Set-Cookie", "uf=uf_tok; Domain=.localhost; Path=/")
+                    .body("{\"status\":true}")
+                    .build()
+
+                request.target.startsWith("/apis/login/userLogin4Uname.do") -> {
+                    val uid = nextUid++
+                    MockResponse.Builder()
+                        .code(HTTP_OK)
+                        .body(
+                            """
+                            {"result":1,"msg":{"uid":$uid,"fid":100,"name":"测试用户$uid","phone":"13800138000","schoolname":"示例大学"}}
+                            """.trimIndent(),
+                        )
+                        .build()
+                }
+
+                request.target.startsWith("/mycourse/backclazzdata") -> MockResponse.Builder()
                     .code(HTTP_OK)
                     .body(
                         """
                         {
                           "result": 1,
-                          "data": {
-                            "id": 7001,
-                            "clazzid": 1001,
-                            "name": "课堂二维码签到",
-                            "activeType": 2,
-                            "otherId": 2,
-                            "status": 1,
-                            "ifNeedVCode": ${if (activeInfoNeedsCaptcha) 1 else 0},
-                            "starttime": 1700000000000
-                          }
+                          "channelList": [
+                            {
+                              "cataName": "课程",
+                              "key": 1001,
+                              "cpi": 3001,
+                              "content": {
+                                "id": 1001,
+                                "cpi": 3001,
+                                "name": "1班",
+                                "course": {
+                                  "data": [{"id": 2001, "name": "自动同步示例课程", "teacherfactor": "张老师"}]
+                                }
+                              }
+                            }
+                          ]
                         }
                         """.trimIndent(),
                     )
                     .build()
+
+                request.target.startsWith("/v2/apis/active/getPPTActiveInfo") -> {
+                    val isLoc = request.target.contains("7002")
+                    MockResponse.Builder()
+                        .code(HTTP_OK)
+                        .body(
+                            """
+                            {
+                              "result": 1,
+                              "data": {
+                                "id": ${if (isLoc) 7002 else 7001},
+                                "clazzid": 1001,
+                                "name": "${if (isLoc) "位置签到" else "课堂二维码签到"}",
+                                "activeType": 2,
+                                "otherId": ${if (isLoc) 4 else 2},
+                                "status": 1,
+                                "ifopenAddress": ${if (isLoc) 1 else 0},
+                                "locationText": "第三教学楼",
+                                "ifNeedVCode": ${if (!isLoc && activeInfoNeedsCaptcha) 1 else 0},
+                                "starttime": 1700000000000
+                              }
+                            }
+                            """.trimIndent(),
+                        )
+                        .build()
+                }
 
                 request.target.startsWith("/newsign/preSign") ->
                     MockResponse.Builder().code(HTTP_OK).body("<div class='zhuangtai'>进行中</div>").build()
@@ -366,6 +501,22 @@ class ChaoxingViewModelsTest {
             mutableDisabled.value = manifest.disabledTools
             mutableManifest.value = manifest
         }
+    }
+
+    private class FakeLocationService : ChaoxingLocationService {
+        override suspend fun getCurrentLocation(): AppResult<ResolvedPlace> = AppResult.Success(
+            ResolvedPlace(
+                title = "校内定位点",
+                address = "北京市东城区示例路",
+                gcj02Point = GeoPoint(39.908722, 116.397499),
+                bd09Point = GeoPoint(39.915119, 116.403963),
+            ),
+        )
+
+        override suspend fun searchPlaces(query: String): AppResult<List<ResolvedPlace>> =
+            AppResult.Success(emptyList())
+
+        override suspend fun reverseGeocodeGcj02(gcjLatitude: Double, gcjLongitude: Double): String = "示例教学楼"
     }
 
     companion object {

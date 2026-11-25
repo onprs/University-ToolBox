@@ -157,7 +157,11 @@ class ChaoxingHtmlParser @Inject constructor() {
         }
 
         val roleType = card.selectFirst("input.role[name=role]")?.attr("value")?.toIntOrNull() ?: 0
-        val coverUrl = card.selectFirst(".course-cover img")?.attr("src")?.trim().orEmpty()
+        val imgElement = card.selectFirst(".course-cover img")
+        val rawCoverUrl = listOf("data-original", "data-src", "src")
+            .firstNotNullOfOrNull { attr -> imgElement?.attr(attr)?.trim()?.takeIf { it.isNotEmpty() } }
+            .orEmpty()
+        val coverUrl = ChaoxingUrlNormalizer.normalizeImageUrl(rawCoverUrl)
         val detailLines = card.select("p.line2.color3, p.margint10.line2.color2")
             .map { it.text().trim() }
             .filter { it.isNotEmpty() }

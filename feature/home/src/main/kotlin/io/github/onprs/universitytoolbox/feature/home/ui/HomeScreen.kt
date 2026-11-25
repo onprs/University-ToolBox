@@ -1,6 +1,7 @@
 package io.github.onprs.universitytoolbox.feature.home.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,7 +18,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -49,11 +53,15 @@ import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffold
 import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffoldRole
 import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaffoldNavigator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -210,6 +218,8 @@ private fun HomeTopBar(onOpenLicense: () -> Unit, onOpenSettings: () -> Unit) {
     )
 }
 
+internal const val HOME_SEARCH_FIELD_TEST_TAG = "home_search_field"
+
 @Composable
 private fun HomeCatalogListPane(
     uiState: HomeUiState,
@@ -218,64 +228,81 @@ private fun HomeCatalogListPane(
     onToggleFavorite: (String) -> Unit,
     onItemClick: (HomeToolItem) -> Unit,
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(ToolboxSpacing.medium),
-        verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.mediumSmall),
-    ) {
-        item(key = "search_bar") {
-            HomeSearchField(query = uiState.searchQuery, onQueryChange = onSearchQueryChange)
-        }
+    val focusManager = LocalFocusManager.current
+    val listState = rememberLazyListState()
+    val selectWithClearFocus: (HomeToolItem) -> Unit = { item ->
+        focusManager.clearFocus()
+        onItemClick(item)
+    }
 
-        item(key = "category_chips") {
-            CategoryFilterRow(
-                selectedCategory = uiState.selectedCategory,
-                onSelectCategory = onSelectCategory,
-            )
-        }
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) focusManager.clearFocus()
+    }
 
-        if (uiState.searchQuery.isBlank() && uiState.selectedCategory == null) {
-            if (uiState.pinnedTools.isNotEmpty()) {
-                item(key = "pinned_section") {
-                    HomePinnedSection(pinnedTools = uiState.pinnedTools, onItemClick = onItemClick)
-                }
-            }
-            if (uiState.recentTools.isNotEmpty()) {
-                item(key = "recent_section") {
-                    HomeRecentSection(recentTools = uiState.recentTools, onItemClick = onItemClick)
-                }
-            }
-        }
-
-        item(key = "all_header") {
-            ToolboxSectionHeader(title = stringResource(R.string.feature_home_section_all))
-        }
-
-        if (uiState.filteredTools.isEmpty()) {
-            item(key = "empty_tools") {
-                EmptyStateView(
-                    title = stringResource(R.string.feature_home_empty_title),
-                    description = stringResource(R.string.feature_home_empty_desc),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp),
+    Box(modifier = Modifier.fillMaxSize()) {
+        // 承接 ListDetailPaneScaffold / AnimatedPane 首次挂载时的默认面板焦点请求，防止自动选中搜索框
+        Box(modifier = Modifier.size(1.dp).focusable())
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(ToolboxSpacing.medium),
+            verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.mediumSmall),
+        ) {
+            item(key = "search_bar") {
+                HomeSearchField(
+                    query = uiState.searchQuery,
+                    onQueryChange = onSearchQueryChange,
+                    onClearFocus = { focusManager.clearFocus() },
                 )
             }
-        } else {
-            items(items = uiState.filteredTools, key = { it.descriptor.id }) { item ->
-                ToolCatalogCard(
-                    item = item,
-                    isSelected = item.descriptor.id == uiState.selectedToolId,
-                    onClick = { onItemClick(item) },
-                    onTogglePin = { onToggleFavorite(item.descriptor.id) },
+            item(key = "category_chips") {
+                CategoryFilterRow(
+                    selectedCategory = uiState.selectedCategory,
+                    onSelectCategory = { category ->
+                        focusManager.clearFocus()
+                        onSelectCategory(category)
+                    },
                 )
+            }
+            if (uiState.searchQuery.isBlank() && uiState.selectedCategory == null) {
+                if (uiState.pinnedTools.isNotEmpty()) {
+                    item(key = "pinned_section") {
+                        HomePinnedSection(pinnedTools = uiState.pinnedTools, onItemClick = selectWithClearFocus)
+                    }
+                }
+                if (uiState.recentTools.isNotEmpty()) {
+                    item(key = "recent_section") {
+                        HomeRecentSection(recentTools = uiState.recentTools, onItemClick = selectWithClearFocus)
+                    }
+                }
+            }
+            item(key = "all_header") {
+                ToolboxSectionHeader(title = stringResource(R.string.feature_home_section_all))
+            }
+            if (uiState.filteredTools.isEmpty()) {
+                item(key = "empty_tools") {
+                    EmptyStateView(
+                        title = stringResource(R.string.feature_home_empty_title),
+                        description = stringResource(R.string.feature_home_empty_desc),
+                        modifier = Modifier.fillMaxWidth().height(220.dp),
+                    )
+                }
+            } else {
+                items(items = uiState.filteredTools, key = { it.descriptor.id }) { item ->
+                    ToolCatalogCard(
+                        item = item,
+                        isSelected = item.descriptor.id == uiState.selectedToolId,
+                        onClick = { selectWithClearFocus(item) },
+                        onTogglePin = { onToggleFavorite(item.descriptor.id) },
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun HomeSearchField(query: String, onQueryChange: (String) -> Unit) {
+private fun HomeSearchField(query: String, onQueryChange: (String) -> Unit, onClearFocus: () -> Unit) {
     OutlinedTextField(
         value = query,
         onValueChange = onQueryChange,
@@ -283,7 +310,12 @@ private fun HomeSearchField(query: String, onQueryChange: (String) -> Unit) {
         leadingIcon = { Icon(imageVector = Icons.Outlined.Search, contentDescription = null) },
         trailingIcon = {
             if (query.isNotEmpty()) {
-                IconButton(onClick = { onQueryChange("") }) {
+                IconButton(
+                    onClick = {
+                        onQueryChange("")
+                        onClearFocus()
+                    },
+                ) {
                     Icon(
                         imageVector = Icons.Outlined.Close,
                         contentDescription = stringResource(R.string.feature_home_clear_search),
@@ -291,8 +323,12 @@ private fun HomeSearchField(query: String, onQueryChange: (String) -> Unit) {
                 }
             }
         },
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { onClearFocus() }),
         singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(HOME_SEARCH_FIELD_TEST_TAG),
     )
 }
 

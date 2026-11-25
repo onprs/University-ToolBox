@@ -1,5 +1,8 @@
 package io.github.onprs.universitytoolbox.navigation
 
+import androidx.navigation3.runtime.NavKey
+import io.github.onprs.universitytoolbox.feature.chaoxing.api.CHAOXING_TOOL_ID
+import io.github.onprs.universitytoolbox.feature.chaoxing.api.ChaoxingNavKey
 import io.github.onprs.universitytoolbox.feature.unlock.domain.UnlockDeepLinkParser
 import java.net.URI
 import java.net.URLDecoder
@@ -11,7 +14,7 @@ import java.nio.charset.StandardCharsets
 sealed interface DeepLinkTarget {
     data class Activation(val activationCode: String?) : DeepLinkTarget
 
-    data class Tool(val toolId: String) : DeepLinkTarget
+    data class Tool(val toolId: String, val customEntryKey: NavKey? = null) : DeepLinkTarget
 }
 
 /**
@@ -20,6 +23,7 @@ sealed interface DeepLinkTarget {
 object DeepLinkParser {
     private const val SCHEME_TOOLBOX = "universitytoolbox"
     private const val HOST_TOOL = "tool"
+    private const val HOST_CHAOXING_BIND = "chaoxing-bind"
     private val toolIdQueryKeys = listOf("id", "toolId", "tool")
 
     fun parse(rawUri: String?): DeepLinkTarget? {
@@ -27,21 +31,29 @@ object DeepLinkParser {
         if (trimmed.isEmpty()) {
             return null
         }
-
         if (UnlockDeepLinkParser.isActivationDeepLink(trimmed)) {
             return DeepLinkTarget.Activation(
                 activationCode = UnlockDeepLinkParser.extractActivationCode(trimmed),
             )
         }
-
         val parsedUri = runCatching { URI(trimmed) }.getOrNull()
-        val isToolDeepLink = parsedUri != null &&
-            parsedUri.scheme?.equals(SCHEME_TOOLBOX, ignoreCase = true) == true &&
-            parsedUri.host?.equals(HOST_TOOL, ignoreCase = true) == true
-        if (!isToolDeepLink) {
+            ?.takeIf { it.scheme.equals(SCHEME_TOOLBOX, ignoreCase = true) }
+            ?: return null
+
+        return if (parsedUri.host.equals(HOST_CHAOXING_BIND, ignoreCase = true)) {
+            DeepLinkTarget.Tool(
+                toolId = CHAOXING_TOOL_ID,
+                customEntryKey = ChaoxingNavKey.Accounts(initialSharePayload = trimmed),
+            )
+        } else {
+            parseToolTarget(parsedUri)
+        }
+    }
+
+    private fun parseToolTarget(parsedUri: URI): DeepLinkTarget? {
+        if (!parsedUri.host.equals(HOST_TOOL, ignoreCase = true)) {
             return null
         }
-
         val pathToolId = parsedUri.rawPath
             .orEmpty()
             .trim('/')

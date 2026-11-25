@@ -5,12 +5,15 @@ import io.github.onprs.universitytoolbox.core.license.api.AccessDenialReason
 import io.github.onprs.universitytoolbox.core.license.api.LicenseState
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingAccountEntity
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingCourseEntity
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingPresetLocationEntity
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingSignRecordEntity
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingActiveDetail
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingActivity
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingQrLoginSession
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingSchoolOption
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.BatchSignSummary
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.ChaoxingAccountShareBundle
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.ResolvedPlace
 
 /**
  * 内存二进制图片载体，避免在状态数据类中直接声明数组触发等价性警告。
@@ -50,6 +53,7 @@ data class ChaoxingDashboardUiState(
 enum class ChaoxingLoginTab {
     PASSWORD,
     QR_CODE,
+    IMPORT_SHARED,
 }
 
 data class ChaoxingAccountsUiState(
@@ -71,6 +75,12 @@ data class ChaoxingAccountsUiState(
     val qrSession: ChaoxingQrLoginSession? = null,
     val qrImage: ImageBytesHolder? = null,
     val qrStatusText: String? = null,
+    val importShareInput: String = "",
+    val isImportScannerOpen: Boolean = false,
+    val activeShareBundle: ChaoxingAccountShareBundle? = null,
+    val isDeviceInfoDialogOpen: Boolean = false,
+    val hideDeviceCodeBadge: Boolean = false,
+    val repairingAccountId: String? = null,
     val feedbackMessage: String? = null,
     val isErrorFeedback: Boolean = false,
 )
@@ -117,9 +127,20 @@ data class ChaoxingSignExecutionUiState(
     val pendingCaptchaId: String? = null,
     val pendingCaptchaMessage: String? = null,
     val isScannerSheetOpen: Boolean = false,
+    val isPresetSheetOpen: Boolean = false,
+    val isMapPickerOpen: Boolean = false,
+    val isLocatingCurrent: Boolean = false,
+    val presetLocations: List<ChaoxingPresetLocationEntity> = emptyList(),
+    val mapSearchQuery: String = "",
+    val isSearchingMapPlaces: Boolean = false,
+    val mapSearchResults: List<ResolvedPlace> = emptyList(),
+    val mapExternalJumpPlace: ResolvedPlace? = null,
+    val mapReverseGeocodedAddress: String? = null,
     val isExecuting: Boolean = false,
     val batchSummary: BatchSignSummary? = null,
     val inputHintMessage: String? = null,
+    val hideDeviceCodeBadge: Boolean = false,
+    val isDeviceInfoDialogOpen: Boolean = false,
 )
 
 data class ChaoxingSignRecordsUiState(

@@ -23,14 +23,22 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.Chaoxi
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingCourseDao
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingCredentialCipher
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingDatabase
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingDeviceSettingsRepository
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingPreferenceDao
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingPresetLocationDao
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingSignRecordDao
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.DatabaseChaoxingAuditSink
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.RoomChaoxingDeviceSettingsRepository
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.TinkChaoxingCredentialCipher
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingEndpointConfig
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingHttpClient
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.AccountCookieStorage
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.AccountSessionInterceptor
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.EncryptedAccountCookieStorage
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.ChaoxingAccountManager
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.ChaoxingAccountSessionBridge
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.AndroidChaoxingLocationService
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.ChaoxingLocationService
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.sign.CodeAndGestureSignActionHandler
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.sign.LocationSignActionHandler
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.sign.NormalSignActionHandler
@@ -58,6 +66,20 @@ abstract class ChaoxingModule {
     @Binds
     @Singleton
     abstract fun bindAuditSink(impl: DatabaseChaoxingAuditSink): ChaoxingAuditSink
+
+    @Binds
+    @Singleton
+    abstract fun bindLocationService(impl: AndroidChaoxingLocationService): ChaoxingLocationService
+
+    @Binds
+    @Singleton
+    abstract fun bindDeviceSettingsRepository(
+        impl: RoomChaoxingDeviceSettingsRepository,
+    ): ChaoxingDeviceSettingsRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindAccountSessionBridge(impl: ChaoxingAccountManager): ChaoxingAccountSessionBridge
 
     @Binds
     @IntoSet
@@ -102,7 +124,9 @@ abstract class ChaoxingModule {
             context = context,
             klass = ChaoxingDatabase::class.java,
             name = ChaoxingDatabase.DATABASE_NAME,
-        ).build()
+        )
+            .addMigrations(ChaoxingDatabase.MIGRATION_1_2)
+            .build()
 
         @Provides
         fun provideChaoxingAccountDao(database: ChaoxingDatabase): ChaoxingAccountDao = database.accountDao()
@@ -112,6 +136,13 @@ abstract class ChaoxingModule {
 
         @Provides
         fun provideChaoxingSignRecordDao(database: ChaoxingDatabase): ChaoxingSignRecordDao = database.signRecordDao()
+
+        @Provides
+        fun provideChaoxingPresetLocationDao(database: ChaoxingDatabase): ChaoxingPresetLocationDao =
+            database.presetLocationDao()
+
+        @Provides
+        fun provideChaoxingPreferenceDao(database: ChaoxingDatabase): ChaoxingPreferenceDao = database.preferenceDao()
 
         @Provides
         @IntoSet

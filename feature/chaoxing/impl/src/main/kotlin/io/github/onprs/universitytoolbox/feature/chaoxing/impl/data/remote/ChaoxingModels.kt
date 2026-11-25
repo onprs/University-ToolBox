@@ -2,9 +2,46 @@ package io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote
 
 import io.github.onprs.universitytoolbox.core.common.result.DomainError
 import io.github.onprs.universitytoolbox.core.common.security.Redactor
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.CoordinateConverter
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+
+/**
+ * 超星静态图片地址归一化工具：补全协议或站点前缀，并将超星系域名下的明文 HTTP 升级为 HTTPS。
+ */
+object ChaoxingUrlNormalizer {
+    private val HTTPS_UPGRADEABLE_SUFFIXES = listOf(
+        "chaoxing.com",
+        "cldisk.com",
+        "cxwfw.com",
+        "xuexitong.com",
+    )
+
+    fun normalizeImageUrl(
+        rawUrl: String?,
+        defaultBaseUrl: String = ChaoxingEndpointConfig.OFFICIAL_MOOC2_ANS_BASE,
+    ): String {
+        val trimmed = rawUrl?.trim().orEmpty()
+        if (trimmed.isEmpty()) {
+            return ""
+        }
+        val candidate = when {
+            trimmed.startsWith("//") -> "https:$trimmed"
+            trimmed.startsWith("/") -> "${defaultBaseUrl.trimEnd('/')}$trimmed"
+            else -> trimmed
+        }
+        val parsed = candidate.toHttpUrlOrNull() ?: return candidate
+        val host = parsed.host.lowercase()
+        val shouldUpgrade = parsed.scheme.equals("http", ignoreCase = true) &&
+            HTTPS_UPGRADEABLE_SUFFIXES.any { suffix -> host == suffix || host.endsWith(".$suffix") }
+        return if (shouldUpgrade) {
+            parsed.newBuilder().scheme("https").build().toString()
+        } else {
+            parsed.toString()
+        }
+    }
+}
 
 /**
  * 已认证学习通账号的脱敏资料模型。
@@ -142,7 +179,11 @@ data class ChaoxingActiveDetail(
     val serverNowMs: Long?,
     val releaseNum: Int,
     val attendNum: Int,
-)
+) {
+    /** 当前签到活动是否在服务端响应中公开了有效的目标地点经纬度。 */
+    val hasTargetCoordinates: Boolean
+        get() = CoordinateConverter.isValidTargetCoordinate(targetLatitude, targetLongitude)
+}
 
 /**
  * 学校检索结果项。
@@ -217,6 +258,8 @@ sealed interface ChaoxingSignRawOutcome {
     data class PhotoAuthError(val message: String) : ChaoxingSignRawOutcome
 
     data class Ended(val message: String) : ChaoxingSignRawOutcome
+
+    data class DuplicateDeviceCode(val message: String) : ChaoxingSignRawOutcome
 
     data class SessionExpired(val message: String) : ChaoxingSignRawOutcome
 
@@ -299,6 +342,7 @@ object ChaoxingQrParser {
 object ChaoxingSignResponseParser {
     private const val PHOTO_ERROR_CODE = "photoAuthError_PCR007"
     private const val CODE_ERROR_MARKER = "90002"
+    private const val LOCATION_ERROR_PREFIX = "errorLocation"
 
     private data class OutcomeRule(val matches: (String) -> Boolean, val factory: (String) -> ChaoxingSignRawOutcome)
 
@@ -326,12 +370,28 @@ object ChaoxingSignResponseParser {
             factory = { text -> ChaoxingSignRawOutcome.InvalidCode(text) },
         ),
         OutcomeRule(
-            matches = { text -> text.contains("不在可签到范围内") || text.contains("指定签到地点") },
-            factory = { text -> ChaoxingSignRawOutcome.OutOfRange(text) },
+            matches = { text ->
+                text.contains("不在可签到范围内") ||
+                    text.contains("指定签到地点") ||
+                    text.startsWith(LOCATION_ERROR_PREFIX, ignoreCase = true)
+            },
+            factory = { text ->
+                val formatted = if (text.startsWith(LOCATION_ERROR_PREFIX, ignoreCase = true)) {
+                    val distance = text.substringAfter('_', "").trim()
+                    if (distance.isNotEmpty()) "超出指定签到范围（距离约 ${distance}米）" else "超出指定签到范围"
+                } else {
+                    text
+                }
+                ChaoxingSignRawOutcome.OutOfRange(formatted)
+            },
         ),
         OutcomeRule(
             matches = { text -> text.contains("已结束") },
             factory = { text -> ChaoxingSignRawOutcome.Ended(text) },
+        ),
+        OutcomeRule(
+            matches = { text -> text.contains("同一设备不允许重复签到") },
+            factory = { text -> ChaoxingSignRawOutcome.DuplicateDeviceCode(text) },
         ),
         OutcomeRule(
             matches = { text -> text.contains("validate", ignoreCase = true) || text.contains("验证码") },
@@ -391,6 +451,7 @@ object ChaoxingDomainMapper {
         val uidStr = msg.uid.toString()
         val rawPhone = msg.phone.orEmpty().ifBlank { fallbackPhone }
         val displayName = msg.name.orEmpty().ifBlank { msg.nick.orEmpty().ifBlank { uidStr } }
+        val rawAvatar = msg.pic.orEmpty().ifBlank { endpointConfig.avatarUrl(uidStr) }
         return ChaoxingAccountProfile(
             uid = uidStr,
             fid = msg.fid.toString(),
@@ -398,7 +459,7 @@ object ChaoxingDomainMapper {
             nickName = msg.nick.orEmpty().ifBlank { displayName },
             maskedPhone = Redactor.maskPhone(rawPhone),
             schoolName = msg.schoolname.orEmpty(),
-            avatarUrl = msg.pic.orEmpty().ifBlank { endpointConfig.avatarUrl(uidStr) },
+            avatarUrl = ChaoxingUrlNormalizer.normalizeImageUrl(rawAvatar, endpointConfig.photoBaseUrl),
             studentCode = msg.studentcode.orEmpty(),
         )
     }
@@ -420,7 +481,7 @@ object ChaoxingDomainMapper {
                 name = courseData.name.orEmpty().trim(),
                 className = content.name.orEmpty().trim(),
                 teacherName = courseData.teacherfactor.orEmpty().trim(),
-                coverUrl = courseData.imageurl.orEmpty(),
+                coverUrl = ChaoxingUrlNormalizer.normalizeImageUrl(courseData.imageurl),
                 studentCount = content.studentcount,
                 roleType = content.roletype,
                 isArchived = content.isFiled == 1 || content.state != 0,
@@ -464,6 +525,25 @@ object ChaoxingDomainMapper {
             ifPhoto = requiresPhoto,
             ifOpenAddress = requiresLocation,
         )
+        val rawBdLat = dto.locationLatitude?.toDoubleOrNull() ?: dto.latitude?.toDoubleOrNull()
+        val rawBdLng = dto.locationLongitude?.toDoubleOrNull() ?: dto.longitude?.toDoubleOrNull()
+        val rawGdLat = dto.locationLatitudeGd?.toDoubleOrNull()
+        val rawGdLng = dto.locationLongitudeGd?.toDoubleOrNull()
+
+        val validGd = if (CoordinateConverter.isValidTargetCoordinate(rawGdLat, rawGdLng)) {
+            rawGdLat!! to rawGdLng!!
+        } else {
+            null
+        }
+        val validBd = when {
+            CoordinateConverter.isValidTargetCoordinate(rawBdLat, rawBdLng) -> rawBdLat!! to rawBdLng!!
+            validGd != null -> {
+                val converted = CoordinateConverter.gcj02ToBd09(validGd.first, validGd.second)
+                converted.latitude to converted.longitude
+            }
+            else -> null
+        }
+
         return ChaoxingActiveDetail(
             activeId = dto.id,
             clazzId = dto.clazzid,
@@ -483,10 +563,10 @@ object ChaoxingDomainMapper {
             requireWeChat = dto.openCheckWeChatFlag == 1,
             locationText = dto.locationText?.takeIf { it.isNotBlank() },
             locationRangeMeters = dto.locationRange?.toIntOrNull(),
-            targetLatitude = dto.locationLatitude?.toDoubleOrNull() ?: dto.latitude?.takeIf { it != 0.0 },
-            targetLongitude = dto.locationLongitude?.toDoubleOrNull() ?: dto.longitude?.takeIf { it != 0.0 },
-            targetLatitudeGd = dto.locationLatitudeGd?.toDoubleOrNull(),
-            targetLongitudeGd = dto.locationLongitudeGd?.toDoubleOrNull(),
+            targetLatitude = validBd?.first,
+            targetLongitude = validBd?.second,
+            targetLatitudeGd = validGd?.first,
+            targetLongitudeGd = validGd?.second,
             signInId = dto.signInId,
             signOutDurationMs = dto.signOutDuration,
             startTimeMs = dto.starttime,

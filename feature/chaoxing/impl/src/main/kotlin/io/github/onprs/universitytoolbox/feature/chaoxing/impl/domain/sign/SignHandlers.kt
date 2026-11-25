@@ -39,7 +39,7 @@ class NormalSignActionHandler @Inject constructor(private val remoteDataSource: 
         )
         return submitAndMap(
             remoteDataSource = remoteDataSource,
-            accountId = account.accountId,
+            account = account,
             params = StuSignSubmitParams(
                 activeId = detail.activeId,
                 uid = account.uid,
@@ -69,31 +69,17 @@ class PhotoSignActionHandler @Inject constructor(private val remoteDataSource: C
         detail: ChaoxingActiveDetail,
         request: SignExecutionRequest,
     ): SignExecutionResult {
-        var objectId = request.preUploadedObjectId?.takeIf { it.isNotBlank() }
-        if (objectId == null) {
-            val photoBytes = request.photoBytes
-            if (photoBytes == null || photoBytes.isEmpty()) {
-                return SignExecutionResult.RequiresExtraInput(
-                    missingField = SignMissingField.PHOTO_IMAGE,
-                    message = "该签到需要上传现场照片",
-                )
-            }
-            val token = when (val tokenRes = remoteDataSource.requestPanUploadToken(account.accountId)) {
-                is AppResult.Success -> tokenRes.data
-                is AppResult.Failure -> return tokenRes.error.toSignFailure()
-            }
-            objectId = when (
-                val uploadRes = remoteDataSource.uploadSignPhoto(
-                    accountId = account.accountId,
-                    uid = account.uid,
-                    token = token,
-                    fileName = request.photoFileName.orEmpty().ifBlank { "sign_photo.jpg" },
-                    imageBytes = photoBytes,
-                )
-            ) {
-                is AppResult.Success -> uploadRes.data
-                is AppResult.Failure -> return uploadRes.error.toSignFailure()
-            }
+        val objectId = when (val photoRes = resolvePhotoObjectId(account, request)) {
+            is AppResult.Success -> photoRes.data
+            is AppResult.Failure -> return photoRes.error.toSignFailure()
+        } ?: return SignExecutionResult.RequiresExtraInput(
+            missingField = SignMissingField.PHOTO_IMAGE,
+            message = "该签到需要上传现场照片",
+        )
+
+        val missingLoc = ensureOptionalLocationPresent(detail, request, "该签到开启了位置范围校验，请先选择签到地点")
+        if (missingLoc != null) {
+            return missingLoc
         }
 
         remoteDataSource.preSign(
@@ -106,7 +92,7 @@ class PhotoSignActionHandler @Inject constructor(private val remoteDataSource: C
 
         return submitAndMap(
             remoteDataSource = remoteDataSource,
-            accountId = account.accountId,
+            account = account,
             params = StuSignSubmitParams(
                 activeId = detail.activeId,
                 uid = account.uid,
@@ -114,7 +100,32 @@ class PhotoSignActionHandler @Inject constructor(private val remoteDataSource: C
                 displayName = account.displayName,
                 objectId = objectId,
                 validate = request.captchaValidate,
-            ),
+            ).withOptionalLocation(detail, request),
+        )
+    }
+
+    private suspend fun resolvePhotoObjectId(
+        account: SignAccountIdentity,
+        request: SignExecutionRequest,
+    ): AppResult<String?> {
+        val preUploaded = request.preUploadedObjectId?.takeIf { it.isNotBlank() }
+        if (preUploaded != null) {
+            return AppResult.Success(preUploaded)
+        }
+        val photoBytes = request.photoBytes
+        if (photoBytes == null || photoBytes.isEmpty()) {
+            return AppResult.Success(null)
+        }
+        val token = when (val tokenRes = remoteDataSource.requestPanUploadToken(account.accountId)) {
+            is AppResult.Success -> tokenRes.data
+            is AppResult.Failure -> return tokenRes
+        }
+        return remoteDataSource.uploadSignPhoto(
+            accountId = account.accountId,
+            uid = account.uid,
+            token = token,
+            fileName = request.photoFileName.orEmpty().ifBlank { "sign_photo.jpg" },
+            imageBytes = photoBytes,
         )
     }
 }
@@ -131,21 +142,17 @@ class QrCodeSignActionHandler @Inject constructor(private val remoteDataSource: 
         detail: ChaoxingActiveDetail,
         request: SignExecutionRequest,
     ): SignExecutionResult {
-        var resolvedEnc = request.enc?.takeIf { it.isNotBlank() }
-        if (resolvedEnc == null && !request.rawQrContent.isNullOrBlank()) {
-            val directParsed = ChaoxingQrParser.parse(request.rawQrContent)
-            resolvedEnc = directParsed?.enc ?: when (
-                val redirectRes = remoteDataSource.resolveQrPayload(account.accountId, request.rawQrContent)
-            ) {
-                is AppResult.Success -> redirectRes.data.enc
-                is AppResult.Failure -> return redirectRes.error.toSignFailure()
-            }
-        }
-        if (resolvedEnc.isNullOrBlank()) {
-            return SignExecutionResult.RequiresExtraInput(
-                missingField = SignMissingField.QR_CODE_ENC,
-                message = "请先扫描课堂展示的签到二维码",
-            )
+        val resolvedEnc = when (val encRes = resolveQrEnc(account.accountId, request)) {
+            is AppResult.Success -> encRes.data
+            is AppResult.Failure -> return encRes.error.toSignFailure()
+        } ?: return SignExecutionResult.RequiresExtraInput(
+            missingField = SignMissingField.QR_CODE_ENC,
+            message = "请先扫描课堂展示的签到二维码",
+        )
+
+        val missingLoc = ensureOptionalLocationPresent(detail, request, "该二维码签到要求位置范围校验，请先选择签到地点")
+        if (missingLoc != null) {
+            return missingLoc
         }
 
         remoteDataSource.preSign(
@@ -158,7 +165,7 @@ class QrCodeSignActionHandler @Inject constructor(private val remoteDataSource: 
 
         return submitAndMap(
             remoteDataSource = remoteDataSource,
-            accountId = account.accountId,
+            account = account,
             params = StuSignSubmitParams(
                 activeId = detail.activeId,
                 uid = account.uid,
@@ -166,8 +173,24 @@ class QrCodeSignActionHandler @Inject constructor(private val remoteDataSource: 
                 displayName = account.displayName,
                 enc = resolvedEnc,
                 validate = request.captchaValidate,
-            ),
+            ).withOptionalLocation(detail, request),
         )
+    }
+
+    private suspend fun resolveQrEnc(accountId: String, request: SignExecutionRequest): AppResult<String?> {
+        val directEnc = request.enc?.takeIf { it.isNotBlank() }
+        if (directEnc != null) {
+            return AppResult.Success(directEnc)
+        }
+        val rawQr = request.rawQrContent?.takeIf { it.isNotBlank() } ?: return AppResult.Success(null)
+        val directParsed = ChaoxingQrParser.parse(rawQr)?.enc
+        if (directParsed != null) {
+            return AppResult.Success(directParsed)
+        }
+        return when (val redirectRes = remoteDataSource.resolveQrPayload(accountId, rawQr)) {
+            is AppResult.Success -> AppResult.Success(redirectRes.data.enc)
+            is AppResult.Failure -> redirectRes
+        }
     }
 }
 
@@ -202,7 +225,7 @@ class LocationSignActionHandler @Inject constructor(private val remoteDataSource
 
         return submitAndMap(
             remoteDataSource = remoteDataSource,
-            accountId = account.accountId,
+            account = account,
             params = StuSignSubmitParams(
                 activeId = detail.activeId,
                 uid = account.uid,
@@ -263,7 +286,7 @@ class CodeAndGestureSignActionHandler @Inject constructor(private val remoteData
 
         return submitAndMap(
             remoteDataSource = remoteDataSource,
-            accountId = account.accountId,
+            account = account,
             params = StuSignSubmitParams(
                 activeId = detail.activeId,
                 uid = account.uid,
@@ -329,13 +352,50 @@ class SignStrategyDispatcher @Inject constructor(
     }
 }
 
+private fun ensureOptionalLocationPresent(
+    detail: ChaoxingActiveDetail,
+    request: SignExecutionRequest,
+    missingMessage: String,
+): SignExecutionResult? = if (detail.requiresLocation && (request.latitude == null || request.longitude == null)) {
+    SignExecutionResult.RequiresExtraInput(
+        missingField = SignMissingField.LOCATION_COORDINATE,
+        message = missingMessage,
+    )
+} else {
+    null
+}
+
+private fun StuSignSubmitParams.withOptionalLocation(
+    detail: ChaoxingActiveDetail,
+    request: SignExecutionRequest,
+): StuSignSubmitParams {
+    val lat = request.latitude
+    val lng = request.longitude
+    return if (lat != null && lng != null) {
+        copy(
+            latitude = lat.toString(),
+            longitude = lng.toString(),
+            address = request.address ?: detail.locationText.orEmpty(),
+            ifTiJiao = "1",
+        )
+    } else {
+        this
+    }
+}
+
 private suspend fun submitAndMap(
     remoteDataSource: ChaoxingRemoteDataSource,
-    accountId: String,
+    account: SignAccountIdentity,
     params: StuSignSubmitParams,
-): SignExecutionResult = when (val res = remoteDataSource.submitStuSignAjax(accountId, params)) {
-    is AppResult.Success -> res.data.toExecutionResult(params.activeId)
-    is AppResult.Failure -> res.error.toSignFailure()
+): SignExecutionResult {
+    val enriched = params.copy(
+        deviceCode = params.deviceCode ?: account.deviceCode.takeIf { it.isNotBlank() },
+        clientUserAgent = params.clientUserAgent ?: account.clientUserAgent?.takeIf { it.isNotBlank() },
+    )
+    return when (val res = remoteDataSource.submitStuSignAjax(account.accountId, enriched)) {
+        is AppResult.Success -> res.data.toExecutionResult(enriched.activeId)
+        is AppResult.Failure -> res.error.toSignFailure()
+    }
 }
 
 private fun DomainError.toSignFailure(): SignExecutionResult = when (this) {

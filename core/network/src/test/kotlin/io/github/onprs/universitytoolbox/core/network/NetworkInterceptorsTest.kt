@@ -167,6 +167,45 @@ class NetworkInterceptorsTest {
         assertNull(TrustedNetworkTimeInterceptor.parseHttpDateEpochSeconds("invalid-date"))
     }
 
+    @Test
+    fun `image compat interceptor injects browser user agent referer and upgrades chaoxing http urls`() {
+        val interceptor = ImageCompatRequestInterceptor()
+        assertEquals(
+            "https://p.ananas.chaoxing.com/star4/demo/240_130c.jpg",
+            ImageCompatRequestInterceptor.upgradeInsecureKnownImageUrl(
+                okhttp3.HttpUrl.Builder()
+                    .scheme("http")
+                    .host("p.ananas.chaoxing.com")
+                    .addPathSegments("star4/demo/240_130c.jpg")
+                    .build(),
+            ).toString(),
+        )
+        assertTrue(ImageCompatRequestInterceptor.isChaoxingImageHost("p.ananas.chaoxing.com"))
+        assertTrue(ImageCompatRequestInterceptor.isChaoxingImageHost("p.cldisk.com"))
+        assertFalse(ImageCompatRequestInterceptor.isChaoxingImageHost("localhost"))
+
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse.Builder().code(200).body("img").build())
+            server.start()
+
+            val client = OkHttpClient.Builder()
+                .addInterceptor(interceptor)
+                .build()
+
+            val request = Request.Builder()
+                .url(server.url("/tile.png"))
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                assertEquals(200, response.code)
+            }
+
+            val recorded = server.takeRequest()
+            assertEquals(ImageCompatRequestInterceptor.MOBILE_BROWSER_USER_AGENT, recorded.headers["User-Agent"])
+        }
+    }
+
     private class FakeLicenseEngine(private val onTimeSynced: (Long) -> Unit = {}) : LicenseEngine {
         private val mutableState = MutableStateFlow<LicenseState>(
             LicenseState.Locked(LockReason.NOT_ACTIVATED, "TEST-CHALLENGE"),

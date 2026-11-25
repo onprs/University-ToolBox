@@ -24,6 +24,11 @@ data class ChaoxingAccountEntity(
     val sessionStatus: String,
     val lastVerifiedAtMs: Long,
     val createdAtMs: Long,
+    val encryptedAccountInputCiphertext: String? = null,
+    val deviceCode: String = "",
+    val isUnifiedDeviceCode: Boolean = false,
+    val clientUniqueId: String = "",
+    val deviceModel: String = "",
 )
 
 /**
@@ -66,4 +71,28 @@ data class ChaoxingSignRecordEntity(
     val outcome: String,
     val message: String,
     val timestampMs: Long,
+)
+
+/**
+ * 用户保存的常用预设签到地点实体（经纬度统一采用超星位置签到接口要求的 BD-09 百度坐标系）。
+ */
+@Entity(tableName = "chaoxing_preset_locations")
+data class ChaoxingPresetLocationEntity(
+    @PrimaryKey(autoGenerate = true)
+    val id: Long = 0L,
+    val title: String,
+    val address: String,
+    val latitude: Double,
+    val longitude: Double,
+    val createdAtMs: Long,
+)
+
+/**
+ * 学习通模块自治键值配置实体（用于保存设备码图标显示开关及本机默认设备码缓存）。
+ */
+@Entity(tableName = "chaoxing_preferences")
+data class ChaoxingPreferenceEntity(
+    @PrimaryKey
+    val key: String,
+    val value: String,
 )

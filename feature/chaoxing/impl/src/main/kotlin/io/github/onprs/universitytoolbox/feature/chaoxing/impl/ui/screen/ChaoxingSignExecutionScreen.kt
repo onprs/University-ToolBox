@@ -1,6 +1,7 @@
 package io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.screen
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,9 +23,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.BookmarkAdd
+import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Flag
+import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.MyLocation
 import androidx.compose.material.icons.outlined.PhotoLibrary
+import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -34,6 +42,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -52,6 +61,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -67,9 +77,12 @@ import io.github.onprs.universitytoolbox.core.ui.LoadingStateView
 import io.github.onprs.universitytoolbox.core.ui.PermissionGuideCard
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.R
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingAccountEntity
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingPresetLocationEntity
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingActiveDetail
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingSignType
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.AccountSignReport
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.CoordinateConverter
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.GeoPoint
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.sign.SignExecutionResult
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.ChaoxingSignExecutionUiState
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.viewmodel.ChaoxingSignExecutionViewModel
@@ -82,13 +95,37 @@ fun ChaoxingSignExecutionScreen(
     courseName: String = "",
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var pendingJumpInMap by remember { mutableStateOf(false) }
 
-    if (state.isScannerSheetOpen) {
-        QrScannerBottomSheet(
-            onBarcodeScanned = viewModel::onBarcodeScanned,
-            onDismiss = { viewModel.setScannerSheetOpen(false) },
-        )
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        val granted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (granted) {
+            viewModel.useCurrentDeviceLocation(jumpInMap = pendingJumpInMap)
+        }
     }
+    val requestDeviceLocation: (Boolean) -> Unit = { jumpInMap ->
+        pendingJumpInMap = jumpInMap
+        if (hasAnyLocationPermission(context)) {
+            viewModel.useCurrentDeviceLocation(jumpInMap = jumpInMap)
+        } else {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ),
+            )
+        }
+    }
+
+    SignExecutionSheetsHost(
+        state = state,
+        viewModel = viewModel,
+        onRequestDeviceLocationInMap = { requestDeviceLocation(true) },
+    )
 
     Scaffold(
         topBar = {
@@ -123,10 +160,108 @@ fun ChaoxingSignExecutionScreen(
                 detail = state.detail!!,
                 courseName = courseName,
                 viewModel = viewModel,
+                onRequestCurrentLocation = { requestDeviceLocation(false) },
                 modifier = containerModifier,
             )
         }
     }
+}
+
+private fun hasAnyLocationPermission(context: Context): Boolean =
+    ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED ||
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+        PackageManager.PERMISSION_GRANTED
+
+@Composable
+private fun SignExecutionSheetsHost(
+    state: ChaoxingSignExecutionUiState,
+    viewModel: ChaoxingSignExecutionViewModel,
+    onRequestDeviceLocationInMap: () -> Unit,
+) {
+    if (state.isScannerSheetOpen) {
+        QrScannerBottomSheet(
+            onBarcodeScanned = viewModel::onBarcodeScanned,
+            onDismiss = { viewModel.setScannerSheetOpen(false) },
+        )
+    }
+
+    if (state.isPresetSheetOpen) {
+        PresetLocationsBottomSheet(
+            state = state,
+            onApplyActivityTarget = viewModel::applyTargetCourseLocation,
+            onApplyPreset = viewModel::applyPresetLocation,
+            onDeletePreset = viewModel::deletePresetLocation,
+            onSaveCurrentAsPreset = { title, lat, lng, addr ->
+                viewModel.savePresetLocation(title, lat, lng, addr)
+                viewModel.setPresetSheetOpen(false)
+            },
+            onOpenMapPicker = {
+                viewModel.setPresetSheetOpen(false)
+                viewModel.setMapPickerOpen(true)
+            },
+            onDismiss = { viewModel.setPresetSheetOpen(false) },
+        )
+    }
+
+    if (state.isDeviceInfoDialogOpen) {
+        ChaoxingDeviceCodeInfoDialog(
+            hideBadge = state.hideDeviceCodeBadge,
+            onToggleHideBadge = viewModel::setHideDeviceCodeBadge,
+            onDismiss = { viewModel.setDeviceInfoDialogOpen(false) },
+        )
+    }
+
+    if (state.isMapPickerOpen) {
+        SignExecutionMapPickerLauncher(
+            state = state,
+            viewModel = viewModel,
+            onRequestDeviceLocationInMap = onRequestDeviceLocationInMap,
+        )
+    }
+}
+
+@Composable
+private fun SignExecutionMapPickerLauncher(
+    state: ChaoxingSignExecutionUiState,
+    viewModel: ChaoxingSignExecutionViewModel,
+    onRequestDeviceLocationInMap: () -> Unit,
+) {
+    val currentLat = state.latitudeInput.toDoubleOrNull()
+    val currentLng = state.longitudeInput.toDoubleOrNull()
+    val initialPoint = if (CoordinateConverter.isValidTargetCoordinate(currentLat, currentLng)) {
+        GeoPoint(currentLat!!, currentLng!!)
+    } else {
+        null
+    }
+    val detail = state.detail
+    val targetPoint = if (detail != null && detail.hasTargetCoordinates) {
+        GeoPoint(detail.targetLatitude!!, detail.targetLongitude!!)
+    } else {
+        null
+    }
+    ChaoxingMapPickerDialog(
+        initialBd09Point = initialPoint,
+        targetBd09Point = targetPoint,
+        targetRangeMeters = detail?.locationRangeMeters,
+        requiredLocationHint = detail?.locationText,
+        initialAddress = state.addressInput,
+        searchQuery = state.mapSearchQuery,
+        isSearching = state.isSearchingMapPlaces,
+        searchResults = state.mapSearchResults,
+        isLocatingCurrent = state.isLocatingCurrent,
+        externalJumpPlace = state.mapExternalJumpPlace,
+        reverseGeocodedAddress = state.mapReverseGeocodedAddress,
+        onSearchQueryChange = viewModel::updateMapSearchQuery,
+        onExecuteSearch = viewModel::searchMapPlaces,
+        onRequestCurrentLocation = onRequestDeviceLocationInMap,
+        onReverseGeocodeCenter = viewModel::reverseGeocodeMapCenter,
+        onConfirmSelection = viewModel::confirmMapSelection,
+        onSaveAsPresetAndSelect = { title, point, addr ->
+            viewModel.savePresetLocation(title, point.latitude, point.longitude, addr)
+        },
+        onDismiss = { viewModel.setMapPickerOpen(false) },
+    )
 }
 
 @Composable
@@ -135,6 +270,7 @@ private fun SignExecutionBody(
     detail: ChaoxingActiveDetail,
     courseName: String,
     viewModel: ChaoxingSignExecutionViewModel,
+    onRequestCurrentLocation: () -> Unit,
     modifier: Modifier,
 ) {
     LazyColumn(
@@ -149,6 +285,7 @@ private fun SignExecutionBody(
                 state = state,
                 detail = detail,
                 viewModel = viewModel,
+                onRequestCurrentLocation = onRequestCurrentLocation,
             )
         }
 
@@ -184,28 +321,19 @@ private fun SignExecutionBody(
                 accounts = state.availableAccounts,
                 selectedIds = state.selectedAccountIds,
                 maxSubAccountsQuota = state.maxSubAccountsQuota,
+                hideDeviceCodeBadge = state.hideDeviceCodeBadge,
                 onToggle = viewModel::toggleAccountSelection,
                 onSelectAll = viewModel::selectAllEnabledAccounts,
+                onShowDeviceInfo = { viewModel.setDeviceInfoDialogOpen(true) },
             )
         }
 
         item {
-            if (state.isExecuting) {
-                ToolboxLinearProgressBar(modifier = Modifier.padding(bottom = ToolboxSpacing.small))
-            }
-            Button(
-                onClick = { viewModel.executeSign(courseName = courseName) },
-                enabled = !state.isExecuting && state.selectedAccountIds.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    text = if (state.selectedAccountIds.size > 1) {
-                        "提交协同签到（${state.selectedAccountIds.size} 个账号）"
-                    } else {
-                        "提交签到"
-                    },
-                )
-            }
+            SubmitSignButtonSection(
+                isExecuting = state.isExecuting,
+                selectedCount = state.selectedAccountIds.size,
+                onExecute = { viewModel.executeSign(courseName = courseName) },
+            )
         }
 
         state.batchSummary?.let { summary ->
@@ -214,6 +342,26 @@ private fun SignExecutionBody(
                 BatchReportRow(report = report)
             }
         }
+    }
+}
+
+@Composable
+private fun SubmitSignButtonSection(isExecuting: Boolean, selectedCount: Int, onExecute: () -> Unit) {
+    if (isExecuting) {
+        ToolboxLinearProgressBar(modifier = Modifier.padding(bottom = ToolboxSpacing.small))
+    }
+    Button(
+        onClick = onExecute,
+        enabled = !isExecuting && selectedCount > 0,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = if (selectedCount > 1) {
+                "提交协同签到（$selectedCount 个账号）"
+            } else {
+                "提交签到"
+            },
+        )
     }
 }
 
@@ -259,22 +407,42 @@ private fun StrategyInputsSection(
     state: ChaoxingSignExecutionUiState,
     detail: ChaoxingActiveDetail,
     viewModel: ChaoxingSignExecutionViewModel,
+    onRequestCurrentLocation: () -> Unit,
 ) {
-    when {
-        detail.requiresPhoto -> PhotoSignInputSection(state = state, viewModel = viewModel)
-        detail.signType == ChaoxingSignType.QR_CODE -> QrSignInputSection(state = state, viewModel = viewModel)
-        detail.signType == ChaoxingSignType.LOCATION || detail.requiresLocation ->
-            LocationSignInputSection(state = state, detail = detail, viewModel = viewModel)
+    val needsPhoto = detail.requiresPhoto
+    val needsQr = detail.signType == ChaoxingSignType.QR_CODE
+    val needsLocation = detail.signType == ChaoxingSignType.LOCATION || detail.requiresLocation
+    val needsCode = detail.signType == ChaoxingSignType.GESTURE || detail.signType == ChaoxingSignType.SIGN_CODE
+    val hasCustomStrategy = listOf(needsPhoto, needsQr, needsLocation, needsCode).any { it }
 
-        detail.signType == ChaoxingSignType.GESTURE || detail.signType == ChaoxingSignType.SIGN_CODE ->
-            CodeGestureInputSection(state = state, detail = detail, viewModel = viewModel)
-
-        else -> OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+    if (!hasCustomStrategy) {
+        OutlinedCard(modifier = Modifier.fillMaxWidth()) {
             Text(
                 text = if (detail.isSignOut) "普通签退无需额外参数，可直接提交。" else "普通签到无需额外参数，点击下方即可提交。",
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(ToolboxSpacing.medium),
             )
+        }
+        return
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.medium)) {
+        if (needsPhoto) {
+            PhotoSignInputSection(state = state, viewModel = viewModel)
+        }
+        if (needsQr) {
+            QrSignInputSection(state = state, viewModel = viewModel)
+        }
+        if (needsLocation) {
+            LocationSignInputSection(
+                state = state,
+                detail = detail,
+                viewModel = viewModel,
+                onRequestCurrentLocation = onRequestCurrentLocation,
+            )
+        }
+        if (needsCode) {
+            CodeGestureInputSection(state = state, detail = detail, viewModel = viewModel)
         }
     }
 }
@@ -380,7 +548,24 @@ private fun LocationSignInputSection(
     state: ChaoxingSignExecutionUiState,
     detail: ChaoxingActiveDetail,
     viewModel: ChaoxingSignExecutionViewModel,
+    onRequestCurrentLocation: () -> Unit,
 ) {
+    var showQuickSaveDialog by remember { mutableStateOf(false) }
+    val currentLat = state.latitudeInput.toDoubleOrNull()
+    val currentLng = state.longitudeInput.toDoubleOrNull()
+    val canSaveCurrent = CoordinateConverter.isValidTargetCoordinate(currentLat, currentLng)
+
+    if (showQuickSaveDialog && canSaveCurrent) {
+        SavePresetNameDialog(
+            initialTitle = state.addressInput.trim().ifBlank { detail.locationText.orEmpty() },
+            onConfirm = { title ->
+                showQuickSaveDialog = false
+                viewModel.savePresetLocation(title, currentLat!!, currentLng!!, state.addressInput)
+            },
+            onDismiss = { showQuickSaveDialog = false },
+        )
+    }
+
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(ToolboxSpacing.medium),
@@ -395,10 +580,21 @@ private fun LocationSignInputSection(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            FilledTonalButton(onClick = viewModel::applyTargetCourseLocation) {
-                Icon(imageVector = Icons.Outlined.MyLocation, contentDescription = null)
-                Text(text = " 填入预设签到坐标")
+
+            LocationQuickActionRow(
+                presetCount = state.presetLocations.size,
+                isLocating = state.isLocatingCurrent,
+                canSaveCurrent = canSaveCurrent,
+                onOpenMapPicker = { viewModel.setMapPickerOpen(true) },
+                onOpenPresets = { viewModel.setPresetSheetOpen(true) },
+                onLocateCurrent = onRequestCurrentLocation,
+                onSaveCurrent = { showQuickSaveDialog = true },
+            )
+
+            if (state.isLocatingCurrent) {
+                ToolboxLinearProgressBar()
             }
+
             Row(horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small)) {
                 OutlinedTextField(
                     value = state.latitudeInput,
@@ -422,6 +618,251 @@ private fun LocationSignInputSection(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+    }
+}
+
+@Composable
+private fun LocationQuickActionRow(
+    presetCount: Int,
+    isLocating: Boolean,
+    canSaveCurrent: Boolean,
+    onOpenMapPicker: () -> Unit,
+    onOpenPresets: () -> Unit,
+    onLocateCurrent: () -> Unit,
+    onSaveCurrent: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.extraSmall)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
+        ) {
+            FilledTonalButton(onClick = onOpenMapPicker, modifier = Modifier.weight(1f)) {
+                Icon(imageVector = Icons.Outlined.Map, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text(text = " 地图选点")
+            }
+            FilledTonalButton(onClick = onOpenPresets, modifier = Modifier.weight(1f)) {
+                Icon(imageVector = Icons.Outlined.Bookmarks, contentDescription = null, modifier = Modifier.size(18.dp))
+                val suffix = if (presetCount > 0) " ($presetCount)" else ""
+                Text(text = " 预设签到坐标$suffix")
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
+        ) {
+            OutlinedButton(
+                onClick = onLocateCurrent,
+                enabled = !isLocating,
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.MyLocation,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(text = " 当前定位")
+            }
+            if (canSaveCurrent) {
+                OutlinedButton(onClick = onSaveCurrent, modifier = Modifier.weight(1f)) {
+                    Icon(
+                        imageVector = Icons.Outlined.BookmarkAdd,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(text = " 保存当前为预设")
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PresetLocationsBottomSheet(
+    state: ChaoxingSignExecutionUiState,
+    onApplyActivityTarget: () -> Unit,
+    onApplyPreset: (ChaoxingPresetLocationEntity) -> Unit,
+    onDeletePreset: (Long) -> Unit,
+    onSaveCurrentAsPreset: (title: String, latitude: Double, longitude: Double, address: String) -> Unit,
+    onOpenMapPicker: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var showSaveDialog by remember { mutableStateOf(false) }
+    val currentLat = state.latitudeInput.toDoubleOrNull()
+    val currentLng = state.longitudeInput.toDoubleOrNull()
+    val canSaveCurrent = CoordinateConverter.isValidTargetCoordinate(currentLat, currentLng)
+    val detail = state.detail
+
+    if (showSaveDialog && canSaveCurrent) {
+        SavePresetNameDialog(
+            initialTitle = state.addressInput.trim().ifBlank { detail?.locationText.orEmpty() },
+            onConfirm = { title ->
+                showSaveDialog = false
+                onSaveCurrentAsPreset(title, currentLat!!, currentLng!!, state.addressInput)
+            },
+            onDismiss = { showSaveDialog = false },
+        )
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        PresetSheetBody(
+            detail = detail,
+            presets = state.presetLocations,
+            canSaveCurrent = canSaveCurrent,
+            onApplyActivityTarget = onApplyActivityTarget,
+            onApplyPreset = onApplyPreset,
+            onDeletePreset = onDeletePreset,
+            onRequestSaveCurrent = { showSaveDialog = true },
+            onOpenMapPicker = onOpenMapPicker,
+        )
+    }
+}
+
+@Composable
+private fun PresetSheetBody(
+    detail: ChaoxingActiveDetail?,
+    presets: List<ChaoxingPresetLocationEntity>,
+    canSaveCurrent: Boolean,
+    onApplyActivityTarget: () -> Unit,
+    onApplyPreset: (ChaoxingPresetLocationEntity) -> Unit,
+    onDeletePreset: (Long) -> Unit,
+    onRequestSaveCurrent: () -> Unit,
+    onOpenMapPicker: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = ToolboxSpacing.medium, vertical = ToolboxSpacing.small),
+        verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(text = "预设签到坐标", style = MaterialTheme.typography.titleMedium)
+            if (canSaveCurrent) {
+                TextButton(onClick = onRequestSaveCurrent) { Text(text = "将当前坐标存为预设") }
+            }
+        }
+
+        if (detail != null && detail.hasTargetCoordinates) {
+            ActivityTargetPresetCard(detail = detail, onApply = onApplyActivityTarget)
+        }
+
+        if (presets.isEmpty()) {
+            EmptyPresetsGuideCard(onOpenMapPicker = onOpenMapPicker)
+        } else {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 320.dp),
+                verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
+            ) {
+                items(presets, key = { it.id }) { preset ->
+                    SavedPresetLocationCard(
+                        preset = preset,
+                        onSelect = { onApplyPreset(preset) },
+                        onDelete = { onDeletePreset(preset.id) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ActivityTargetPresetCard(detail: ChaoxingActiveDetail, onApply: () -> Unit) {
+    ElevatedCard(onClick = onApply, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(ToolboxSpacing.medium),
+            horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(imageVector = Icons.Outlined.Flag, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = "本次签到指定地点", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    text = detail.locationText.orEmpty().ifBlank {
+                        "${CoordinateConverter.formatCoordinate(detail.targetLatitude!!)}, " +
+                            CoordinateConverter.formatCoordinate(detail.targetLongitude!!)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            ToolboxStatusBadge(
+                text = "活动坐标",
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SavedPresetLocationCard(preset: ChaoxingPresetLocationEntity, onSelect: () -> Unit, onDelete: () -> Unit) {
+    OutlinedCard(onClick = onSelect, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = ToolboxSpacing.medium, vertical = ToolboxSpacing.small),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Place,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = preset.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val subtitle = preset.address.takeIf { it.isNotBlank() && it != preset.title }
+                    ?: "${CoordinateConverter.formatCoordinate(preset.latitude)}, " +
+                    CoordinateConverter.formatCoordinate(preset.longitude)
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(onClick = onDelete) {
+                Icon(imageVector = Icons.Outlined.DeleteOutline, contentDescription = "删除预设")
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyPresetsGuideCard(onOpenMapPicker: () -> Unit) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(ToolboxSpacing.medium),
+            verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
+        ) {
+            Text(
+                text = "暂无已保存的预设签到地点",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                text = "可通过地图手动选择教学楼、操场等常用上课位置并存为预设，后续签到即可一键填入。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            FilledTonalButton(onClick = onOpenMapPicker, modifier = Modifier.fillMaxWidth()) {
+                Icon(imageVector = Icons.Outlined.Map, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text(text = " 打开地图选点并添加预设")
+            }
         }
     }
 }
@@ -479,8 +920,10 @@ private fun MultiAccountChecklistCard(
     accounts: List<ChaoxingAccountEntity>,
     selectedIds: Set<String>,
     maxSubAccountsQuota: Int,
+    hideDeviceCodeBadge: Boolean,
     onToggle: (String) -> Unit,
     onSelectAll: () -> Unit,
+    onShowDeviceInfo: () -> Unit,
 ) {
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -504,7 +947,10 @@ private fun MultiAccountChecklistCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Checkbox(
                             checked = account.accountId in selectedIds,
                             onCheckedChange = { onToggle(account.accountId) },
@@ -513,6 +959,12 @@ private fun MultiAccountChecklistCard(
                             text = "${account.displayName}（${account.maskedAccount}）",
                             style = MaterialTheme.typography.bodyMedium,
                         )
+                        if (!hideDeviceCodeBadge) {
+                            DeviceCodeStatusIconButton(
+                                isUnified = account.isUnifiedDeviceCode,
+                                onClick = onShowDeviceInfo,
+                            )
+                        }
                     }
                     ToolboxStatusBadge(
                         text = if (account.isPrimary) "主账号" else "子账号",

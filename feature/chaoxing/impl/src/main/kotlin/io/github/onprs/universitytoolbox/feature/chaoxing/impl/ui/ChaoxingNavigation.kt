@@ -36,6 +36,17 @@ fun ChaoxingRootFlow(initialRoute: ChaoxingNavKey = ChaoxingNavKey.Dashboard, on
             onExitToHost()
         }
     }
+    val navigateToDashboard: () -> Unit = {
+        val dashboardIndex = subBackStack.indexOfFirst { it is ChaoxingNavKey.Dashboard }
+        if (dashboardIndex >= 0) {
+            while (subBackStack.lastIndex > dashboardIndex) {
+                subBackStack.removeAt(subBackStack.lastIndex)
+            }
+        } else {
+            subBackStack.clear()
+            subBackStack += ChaoxingNavKey.Dashboard
+        }
+    }
 
     NavDisplay(
         backStack = subBackStack,
@@ -48,6 +59,7 @@ fun ChaoxingRootFlow(initialRoute: ChaoxingNavKey = ChaoxingNavKey.Dashboard, on
             registerChaoxingSubEntries(
                 onNavigate = { target -> subBackStack += target },
                 onBack = popSubRoute,
+                onFirstAccountBound = { navigateToDashboard() },
             )
         },
     )
@@ -65,17 +77,28 @@ fun EntryProviderScope<NavKey>.installChaoxingEntries() {
         )
     }
 
+    entry<ChaoxingNavKey.Accounts> { key ->
+        val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+        ChaoxingRootFlow(
+            initialRoute = key,
+            onExitToHost = { backDispatcher?.onBackPressed() },
+        )
+    }
+
     registerChaoxingSubEntries(
         onNavigate = { /* 深链直达子路由时由当前窗口承接或通过系统返回退出 */ },
         onBack = { /* 子路由直达时由宿主 NavDisplay 统一处理返回 */ },
         includeDashboard = false,
+        includeAccounts = false,
     )
 }
 
 private fun EntryProviderScope<NavKey>.registerChaoxingSubEntries(
     onNavigate: (ChaoxingNavKey) -> Unit,
     onBack: () -> Unit,
+    onFirstAccountBound: (String) -> Unit = {},
     includeDashboard: Boolean = true,
+    includeAccounts: Boolean = true,
 ) {
     if (includeDashboard) {
         entry<ChaoxingNavKey.Dashboard> {
@@ -88,13 +111,17 @@ private fun EntryProviderScope<NavKey>.registerChaoxingSubEntries(
         }
     }
 
-    entry<ChaoxingNavKey.Accounts> {
-        val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
-        val viewModel: ChaoxingAccountsViewModel = hiltViewModel()
-        ChaoxingAccountsScreen(
-            viewModel = viewModel,
-            onBack = { if (includeDashboard) onBack() else backDispatcher?.onBackPressed() },
-        )
+    if (includeAccounts) {
+        entry<ChaoxingNavKey.Accounts> { key ->
+            val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+            val viewModel: ChaoxingAccountsViewModel = hiltViewModel()
+            ChaoxingAccountsScreen(
+                viewModel = viewModel,
+                initialSharePayload = key.initialSharePayload,
+                onBack = { if (includeDashboard) onBack() else backDispatcher?.onBackPressed() },
+                onFirstAccountBound = onFirstAccountBound,
+            )
+        }
     }
 
     entry<ChaoxingNavKey.CourseActivities> { key ->

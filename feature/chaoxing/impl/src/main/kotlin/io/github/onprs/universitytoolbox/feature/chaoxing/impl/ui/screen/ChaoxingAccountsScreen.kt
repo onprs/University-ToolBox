@@ -1,8 +1,15 @@
 package io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.screen
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,7 +24,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.PersonOutline
+import androidx.compose.material.icons.outlined.PhonelinkSetup
+import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.QrCode2
+import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -39,6 +50,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,12 +59,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil3.compose.AsyncImage
+import coil3.compose.SubcomposeAsyncImage
+import coil3.compose.SubcomposeAsyncImageContent
 import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxLinearProgressBar
 import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxSectionHeader
 import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxStatusBadge
@@ -66,87 +81,199 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.Chaox
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.ChaoxingAccountManager
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.ChaoxingAccountsUiState
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.ChaoxingLoginTab
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.viewmodel.ChaoxingAccountsUiEvent
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.viewmodel.ChaoxingAccountsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChaoxingAccountsScreen(viewModel: ChaoxingAccountsViewModel, onBack: () -> Unit) {
+fun ChaoxingAccountsScreen(
+    viewModel: ChaoxingAccountsViewModel,
+    onBack: () -> Unit,
+    initialSharePayload: String? = null,
+    onFirstAccountBound: (String) -> Unit = {},
+) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var pendingDeleteAccount by remember { mutableStateOf<ChaoxingAccountEntity?>(null) }
 
-    pendingDeleteAccount?.let { target ->
-        AlertDialog(
-            onDismissRequest = { pendingDeleteAccount = null },
-            title = { Text(text = "解绑账号") },
-            text = { Text(text = "确定移除 ${target.displayName}（${target.maskedAccount}）及其本地缓存会话吗？") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        viewModel.removeAccount(target.accountId)
-                        pendingDeleteAccount = null
-                    },
-                ) { Text(text = "解绑") }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingDeleteAccount = null }) { Text(text = "取消") }
-            },
-        )
+    LaunchedEffect(initialSharePayload) {
+        if (!initialSharePayload.isNullOrBlank()) {
+            viewModel.consumeInitialSharePayload(initialSharePayload)
+        }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(text = stringResource(R.string.chaoxing_accounts_title)) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                            contentDescription = stringResource(R.string.chaoxing_back),
-                        )
-                    }
-                },
-            )
-        },
-    ) { innerPadding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-            contentPadding = PaddingValues(ToolboxSpacing.medium),
-            verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.medium),
-        ) {
-            item { DevStubBanner(licenseState = state.licenseState) }
-            item { QuotaOverviewCard(state = state) }
-
-            if (state.accounts.isNotEmpty()) {
-                item {
-                    ToolboxSectionHeader(
-                        title = "已绑定账号",
-                        subtitle = "开启参与开关后将在多账号签到中按限流队列依次执行",
-                    )
-                }
-                items(state.accounts, key = { it.accountId }) { account ->
-                    BoundAccountCard(
-                        account = account,
-                        onToggleEnabled = { enabled -> viewModel.toggleAccountEnabled(account.accountId, enabled) },
-                        onPromote = { viewModel.promoteToPrimary(account.accountId) },
-                        onRemove = { pendingDeleteAccount = account },
-                    )
-                }
-            }
-
-            item {
-                ToolboxSectionHeader(
-                    title = "绑定学习通账号",
-                    subtitle = if (state.canBindMore) "支持手机号密码或官方客户端扫码登录" else "已达当前子账号配额上限",
-                )
-            }
-
-            item {
-                BindAccountPanel(state = state, viewModel = viewModel)
+    LaunchedEffect(viewModel) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is ChaoxingAccountsUiEvent.FirstAccountBound -> onFirstAccountBound(event.accountId)
             }
         }
     }
+
+    AccountsDialogsHost(
+        state = state,
+        viewModel = viewModel,
+        pendingDeleteAccount = pendingDeleteAccount,
+        onDismissDelete = { pendingDeleteAccount = null },
+    )
+
+    Scaffold(
+        topBar = {
+            AccountsTopAppBar(
+                onBack = onBack,
+                onOpenDeviceInfo = { viewModel.setDeviceInfoDialogOpen(true) },
+            )
+        },
+    ) { innerPadding ->
+        AccountsContentList(
+            state = state,
+            viewModel = viewModel,
+            onRequestDelete = { pendingDeleteAccount = it },
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AccountsTopAppBar(onBack: () -> Unit, onOpenDeviceInfo: () -> Unit) {
+    TopAppBar(
+        title = { Text(text = stringResource(R.string.chaoxing_accounts_title)) },
+        navigationIcon = {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = stringResource(R.string.chaoxing_back),
+                )
+            }
+        },
+        actions = {
+            IconButton(onClick = onOpenDeviceInfo) {
+                Icon(
+                    imageVector = Icons.Outlined.PhonelinkSetup,
+                    contentDescription = "设备码说明",
+                )
+            }
+        },
+    )
+}
+
+@Composable
+private fun AccountsDialogsHost(
+    state: ChaoxingAccountsUiState,
+    viewModel: ChaoxingAccountsViewModel,
+    pendingDeleteAccount: ChaoxingAccountEntity?,
+    onDismissDelete: () -> Unit,
+) {
+    val context = LocalContext.current
+
+    pendingDeleteAccount?.let { target ->
+        UnbindAccountConfirmDialog(
+            target = target,
+            onConfirm = {
+                viewModel.removeAccount(target.accountId)
+                onDismissDelete()
+            },
+            onDismiss = onDismissDelete,
+        )
+    }
+
+    if (state.isDeviceInfoDialogOpen) {
+        ChaoxingDeviceCodeInfoDialog(
+            hideBadge = state.hideDeviceCodeBadge,
+            onToggleHideBadge = viewModel::setHideDeviceCodeBadge,
+            onDismiss = { viewModel.setDeviceInfoDialogOpen(false) },
+        )
+    }
+
+    state.activeShareBundle?.let { bundle ->
+        ChaoxingShareAccountDialog(
+            bundle = bundle,
+            onCopyLink = { shareUrl ->
+                val clipboard = context.getSystemService(ClipboardManager::class.java)
+                clipboard?.setPrimaryClip(ClipData.newPlainText("账号绑定链接", shareUrl))
+                viewModel.notifyShareLinkCopied()
+            },
+            onDismiss = viewModel::dismissShareDialog,
+        )
+    }
+
+    if (state.isImportScannerOpen) {
+        ChaoxingImportQrScannerSheet(
+            onBarcodeScanned = viewModel::onImportBarcodeScanned,
+            onDismiss = { viewModel.setImportScannerOpen(false) },
+        )
+    }
+}
+
+@Composable
+private fun AccountsContentList(
+    state: ChaoxingAccountsUiState,
+    viewModel: ChaoxingAccountsViewModel,
+    onRequestDelete: (ChaoxingAccountEntity) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = PaddingValues(ToolboxSpacing.medium),
+        verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.medium),
+    ) {
+        item { DevStubBanner(licenseState = state.licenseState) }
+        item { QuotaOverviewCard(state = state) }
+
+        if (state.accounts.isNotEmpty()) {
+            item {
+                ToolboxSectionHeader(
+                    title = "已绑定账号",
+                    subtitle = "开启参与开关后将在多账号签到中按限流队列依次执行",
+                )
+            }
+            items(state.accounts, key = { it.accountId }) { account ->
+                BoundAccountCard(
+                    account = account,
+                    hideDeviceCodeBadge = state.hideDeviceCodeBadge,
+                    isRepairing = state.repairingAccountId == account.accountId,
+                    onToggleEnabled = { enabled -> viewModel.toggleAccountEnabled(account.accountId, enabled) },
+                    onShowDeviceInfo = { viewModel.setDeviceInfoDialogOpen(true) },
+                    onShareBinding = { viewModel.requestShareAccount(account.accountId) },
+                    onRepairSession = { viewModel.repairAccountSession(account.accountId) },
+                    onPromote = { viewModel.promoteToPrimary(account.accountId) },
+                    onRemove = { onRequestDelete(account) },
+                )
+            }
+        }
+
+        item {
+            ToolboxSectionHeader(
+                title = "绑定学习通账号",
+                subtitle = if (state.canBindMore) {
+                    "支持密码登录、客户端扫码及账号绑定二维码/链接导入"
+                } else {
+                    "已达当前子账号配额上限，导入已有账号仍可同步更新统一设备码"
+                },
+            )
+        }
+
+        item {
+            BindAccountPanel(state = state, viewModel = viewModel)
+        }
+    }
+}
+
+@Composable
+private fun UnbindAccountConfirmDialog(target: ChaoxingAccountEntity, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = "解绑账号") },
+        text = { Text(text = "确定移除 ${target.displayName}（${target.maskedAccount}）及其本地缓存会话吗？") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text(text = "解绑") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(text = "取消") }
+        },
+    )
 }
 
 @Composable
@@ -184,10 +311,16 @@ private fun QuotaOverviewCard(state: ChaoxingAccountsUiState) {
     }
 }
 
+@Suppress("LongParameterList")
 @Composable
 private fun BoundAccountCard(
     account: ChaoxingAccountEntity,
+    hideDeviceCodeBadge: Boolean,
+    isRepairing: Boolean,
     onToggleEnabled: (Boolean) -> Unit,
+    onShowDeviceInfo: () -> Unit,
+    onShareBinding: () -> Unit,
+    onRepairSession: () -> Unit,
     onPromote: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -201,16 +334,13 @@ private fun BoundAccountCard(
                 horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.mediumSmall),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AsyncImage(
-                    model = account.avatarUrl,
-                    contentDescription = account.displayName,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape),
+                AccountAvatarThumbnail(
+                    avatarUrl = account.avatarUrl,
+                    displayName = account.displayName,
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
+                        horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.extraSmall),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(text = account.displayName, style = MaterialTheme.typography.titleSmall)
@@ -219,6 +349,12 @@ private fun BoundAccountCard(
                             containerColor = MaterialTheme.colorScheme.secondaryContainer,
                             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                         )
+                        if (!hideDeviceCodeBadge) {
+                            DeviceCodeStatusIconButton(
+                                isUnified = account.isUnifiedDeviceCode,
+                                onClick = onShowDeviceInfo,
+                            )
+                        }
                     }
                     Text(
                         text = listOf(account.maskedAccount, account.schoolName)
@@ -231,33 +367,58 @@ private fun BoundAccountCard(
                 Switch(checked = account.isEnabled, onCheckedChange = onToggleEnabled)
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                val isActive = account.sessionStatus == ChaoxingAccountManager.SESSION_ACTIVE
-                ToolboxStatusBadge(
-                    text = if (isActive) "会话有效" else "需重新登录",
-                    containerColor = if (isActive) {
-                        ToolboxTheme.extendedColors.successContainer
-                    } else {
-                        ToolboxTheme.extendedColors.warningContainer
-                    },
-                    contentColor = if (isActive) {
-                        ToolboxTheme.extendedColors.onSuccessContainer
-                    } else {
-                        ToolboxTheme.extendedColors.onWarningContainer
-                    },
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small)) {
-                    if (!account.isPrimary) {
-                        TextButton(onClick = onPromote) { Text(text = "设为主账号") }
-                    }
-                    IconButton(onClick = onRemove) {
-                        Icon(imageVector = Icons.Outlined.DeleteOutline, contentDescription = "解绑")
-                    }
+            BoundAccountActionsRow(
+                account = account,
+                isRepairing = isRepairing,
+                onShareBinding = onShareBinding,
+                onRepairSession = onRepairSession,
+                onPromote = onPromote,
+                onRemove = onRemove,
+            )
+        }
+    }
+}
+
+@Composable
+private fun BoundAccountActionsRow(
+    account: ChaoxingAccountEntity,
+    isRepairing: Boolean,
+    onShareBinding: () -> Unit,
+    onRepairSession: () -> Unit,
+    onPromote: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    val isActive = account.sessionStatus == ChaoxingAccountManager.SESSION_ACTIVE
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ToolboxStatusBadge(
+            text = if (isActive) "会话有效" else "需重新登录",
+            containerColor = if (isActive) {
+                ToolboxTheme.extendedColors.successContainer
+            } else {
+                ToolboxTheme.extendedColors.warningContainer
+            },
+            contentColor = if (isActive) {
+                ToolboxTheme.extendedColors.onSuccessContainer
+            } else {
+                ToolboxTheme.extendedColors.onWarningContainer
+            },
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (!isActive && !account.encryptedPasswordCiphertext.isNullOrBlank()) {
+                TextButton(onClick = onRepairSession, enabled = !isRepairing) {
+                    Text(text = if (isRepairing) "重连中…" else "刷新会话")
                 }
+            }
+            TextButton(onClick = onShareBinding) { Text(text = "分享绑定") }
+            if (!account.isPrimary) {
+                TextButton(onClick = onPromote) { Text(text = "设为主账号") }
+            }
+            IconButton(onClick = onRemove) {
+                Icon(imageVector = Icons.Outlined.DeleteOutline, contentDescription = "解绑")
             }
         }
     }
@@ -279,7 +440,12 @@ private fun BindAccountPanel(state: ChaoxingAccountsUiState, viewModel: Chaoxing
                 Tab(
                     selected = state.activeTab == ChaoxingLoginTab.QR_CODE,
                     onClick = { viewModel.selectTab(ChaoxingLoginTab.QR_CODE) },
-                    text = { Text(text = "扫码登录") },
+                    text = { Text(text = "学习通扫码") },
+                )
+                Tab(
+                    selected = state.activeTab == ChaoxingLoginTab.IMPORT_SHARED,
+                    onClick = { viewModel.selectTab(ChaoxingLoginTab.IMPORT_SHARED) },
+                    text = { Text(text = "绑定导入") },
                 )
             }
 
@@ -290,30 +456,110 @@ private fun BindAccountPanel(state: ChaoxingAccountsUiState, viewModel: Chaoxing
             when (state.activeTab) {
                 ChaoxingLoginTab.PASSWORD -> PasswordLoginForm(state = state, viewModel = viewModel)
                 ChaoxingLoginTab.QR_CODE -> QrLoginForm(state = state, viewModel = viewModel)
+                ChaoxingLoginTab.IMPORT_SHARED -> ImportSharedAccountForm(state = state, viewModel = viewModel)
             }
 
-            if (!state.feedbackMessage.isNullOrBlank()) {
-                Surface(
-                    color = if (state.isErrorFeedback) {
-                        MaterialTheme.colorScheme.errorContainer
-                    } else {
-                        ToolboxTheme.extendedColors.successContainer
-                    },
-                    shape = RoundedCornerShape(ToolboxRadius.chip),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        text = state.feedbackMessage,
-                        color = if (state.isErrorFeedback) {
-                            MaterialTheme.colorScheme.onErrorContainer
-                        } else {
-                            ToolboxTheme.extendedColors.onSuccessContainer
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(ToolboxSpacing.small),
-                    )
-                }
+            FeedbackBanner(message = state.feedbackMessage, isError = state.isErrorFeedback)
+        }
+    }
+}
+
+@Composable
+private fun FeedbackBanner(message: String?, isError: Boolean) {
+    if (message.isNullOrBlank()) {
+        return
+    }
+    Surface(
+        color = if (isError) {
+            MaterialTheme.colorScheme.errorContainer
+        } else {
+            ToolboxTheme.extendedColors.successContainer
+        },
+        shape = RoundedCornerShape(ToolboxRadius.chip),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = message,
+            color = if (isError) {
+                MaterialTheme.colorScheme.onErrorContainer
+            } else {
+                ToolboxTheme.extendedColors.onSuccessContainer
+            },
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(ToolboxSpacing.small),
+        )
+    }
+}
+
+@Composable
+private fun ImportSharedAccountForm(state: ChaoxingAccountsUiState, viewModel: ChaoxingAccountsViewModel) {
+    val context = LocalContext.current
+    val galleryPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) {
+            viewModel.scanImportQrFromUri(uri)
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.small)) {
+        Text(
+            text = "扫描机主在本应用「分享绑定」中生成的账号绑定二维码，或粘贴导入链接，可一键登录并同步统一设备码。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small)) {
+            FilledTonalButton(
+                onClick = { viewModel.setImportScannerOpen(true) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.QrCodeScanner,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(text = " 相机扫码")
             }
+            FilledTonalButton(
+                onClick = {
+                    galleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.PhotoLibrary,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                )
+                Text(text = " 相册识图")
+            }
+        }
+        OutlinedTextField(
+            value = state.importShareInput,
+            onValueChange = viewModel::updateImportShareInput,
+            label = { Text(text = "账号绑定链接") },
+            singleLine = true,
+            trailingIcon = {
+                TextButton(
+                    onClick = {
+                        val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip
+                        val text = clip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                        if (text.isNotBlank()) {
+                            viewModel.updateImportShareInput(text)
+                        }
+                    },
+                ) {
+                    Text(text = "粘贴")
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = { viewModel.submitSharedImport() },
+            enabled = !state.isSubmittingLogin && state.importShareInput.isNotBlank(),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(text = "导入并绑定设备码")
         }
     }
 }
@@ -362,7 +608,7 @@ private fun PasswordLoginForm(state: ChaoxingAccountsUiState, viewModel: Chaoxin
             OutlinedTextField(
                 value = state.captchaValidateInput,
                 onValueChange = viewModel::updateCaptchaValidate,
-                label = { Text(text = "行为验证码校验凭据 (validate)") },
+                label = { Text(text = "行为验证码校验凭据") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -435,5 +681,50 @@ private fun QrLoginForm(state: ChaoxingAccountsUiState, viewModel: ChaoxingAccou
         FilledTonalButton(onClick = viewModel::refreshQrSession) {
             Text(text = "刷新登录二维码")
         }
+    }
+}
+
+@Composable
+private fun AccountAvatarThumbnail(avatarUrl: String, displayName: String) {
+    val fallback: @Composable () -> Unit = {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.secondaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            val initial = displayName.trim().firstOrNull()?.toString()
+            if (!initial.isNullOrBlank()) {
+                Text(
+                    text = initial,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Outlined.PersonOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+        }
+    }
+
+    val avatarModifier = Modifier
+        .size(44.dp)
+        .clip(CircleShape)
+
+    if (avatarUrl.isBlank()) {
+        Box(modifier = avatarModifier) { fallback() }
+    } else {
+        SubcomposeAsyncImage(
+            model = avatarUrl,
+            contentDescription = displayName,
+            contentScale = ContentScale.Crop,
+            modifier = avatarModifier,
+            loading = { fallback() },
+            error = { fallback() },
+            success = { SubcomposeAsyncImageContent() },
+        )
     }
 }

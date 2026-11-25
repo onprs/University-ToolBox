@@ -41,6 +41,19 @@ interface ChaoxingAccountDao {
 
     @Query("DELETE FROM chaoxing_accounts WHERE accountId = :accountId")
     suspend fun deleteById(accountId: String)
+
+    @Query(
+        "UPDATE chaoxing_accounts SET deviceCode = :deviceCode, " +
+            "isUnifiedDeviceCode = :isUnified, clientUniqueId = :uniqueId, " +
+            "deviceModel = :deviceModel WHERE accountId = :accountId",
+    )
+    suspend fun updateDeviceIdentity(
+        accountId: String,
+        deviceCode: String,
+        isUnified: Boolean,
+        uniqueId: String,
+        deviceModel: String,
+    )
 }
 
 @Dao
@@ -89,4 +102,31 @@ interface ChaoxingSignRecordDao {
     companion object {
         const val DEFAULT_RECORD_LIMIT = 100
     }
+}
+
+@Dao
+interface ChaoxingPresetLocationDao {
+    @Query("SELECT * FROM chaoxing_preset_locations ORDER BY createdAtMs DESC")
+    fun observeAll(): Flow<List<ChaoxingPresetLocationEntity>>
+
+    @Query("SELECT * FROM chaoxing_preset_locations ORDER BY createdAtMs DESC")
+    suspend fun getAll(): List<ChaoxingPresetLocationEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(entity: ChaoxingPresetLocationEntity): Long
+
+    @Query("DELETE FROM chaoxing_preset_locations WHERE id = :id")
+    suspend fun deleteById(id: Long)
+}
+
+@Dao
+interface ChaoxingPreferenceDao {
+    @Query("SELECT value FROM chaoxing_preferences WHERE `key` = :key LIMIT 1")
+    fun observeValue(key: String): Flow<String?>
+
+    @Query("SELECT value FROM chaoxing_preferences WHERE `key` = :key LIMIT 1")
+    suspend fun getValue(key: String): String?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: ChaoxingPreferenceEntity)
 }

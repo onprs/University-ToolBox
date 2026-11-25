@@ -8,6 +8,7 @@ import coil3.ImageLoader
 import coil3.SingletonImageLoader
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import dagger.hilt.android.HiltAndroidApp
+import io.github.onprs.universitytoolbox.core.network.ImageCompatRequestInterceptor
 import io.github.onprs.universitytoolbox.core.network.RootHttpClient
 import javax.inject.Inject
 import javax.inject.Provider
@@ -29,6 +30,12 @@ class ToolboxApplication :
     @field:RootHttpClient
     lateinit var rootHttpClientProvider: Provider<OkHttpClient>
 
+    private val imageHttpClient: OkHttpClient by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        rootHttpClientProvider.get().newBuilder()
+            .addInterceptor(ImageCompatRequestInterceptor())
+            .build()
+    }
+
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()
             .setWorkerFactory(workerFactoryProvider.get())
@@ -36,7 +43,7 @@ class ToolboxApplication :
 
     override fun newImageLoader(context: Context): ImageLoader = ImageLoader.Builder(context)
         .components {
-            add(OkHttpNetworkFetcherFactory(callFactory = { rootHttpClientProvider.get() }))
+            add(OkHttpNetworkFetcherFactory(callFactory = { imageHttpClient }))
         }
         .build()
 }

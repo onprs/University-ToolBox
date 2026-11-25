@@ -8,6 +8,8 @@ import io.github.onprs.universitytoolbox.core.license.api.LicenseState
 import io.github.onprs.universitytoolbox.core.license.api.LockReason
 import io.github.onprs.universitytoolbox.core.tool.api.ToolDescriptor
 import io.github.onprs.universitytoolbox.core.tool.api.ToolRegistry
+import io.github.onprs.universitytoolbox.feature.chaoxing.api.CHAOXING_TOOL_ID
+import io.github.onprs.universitytoolbox.feature.chaoxing.api.ChaoxingNavKey
 import io.github.onprs.universitytoolbox.feature.home.navigation.HomeNavKey
 import io.github.onprs.universitytoolbox.feature.settings.navigation.SettingsNavKey
 import io.github.onprs.universitytoolbox.feature.unlock.navigation.UnlockNavKey
@@ -60,7 +62,9 @@ class AppNavigationGate @Inject constructor(
     private var disabledTools: Map<String, String?> = emptyMap()
     private var pendingActivationCode: String? = null
     private var pendingToolId: String? = null
+    private var pendingCustomEntryKey: NavKey? = null
     private var pendingUpgradeToolId: String? = null
+    private var pendingUpgradeEntryKey: NavKey? = null
     private val unlockedBackStack: MutableList<NavKey> = mutableListOf()
     private val pendingEffects: MutableList<GateEffect> = mutableListOf()
 
@@ -73,7 +77,9 @@ class AppNavigationGate @Inject constructor(
             is LicenseState.Locked -> {
                 unlockedBackStack.clear()
                 pendingUpgradeToolId = null
+                pendingUpgradeEntryKey = null
             }
+
             is LicenseState.Unlocked -> syncUnlockedStateLocked()
         }
         return buildUpdate()
@@ -83,7 +89,7 @@ class AppNavigationGate @Inject constructor(
         val target = DeepLinkParser.parse(rawUri) ?: return buildUpdate()
         when (target) {
             is DeepLinkTarget.Activation -> handleActivationDeepLink(target.activationCode)
-            is DeepLinkTarget.Tool -> handleToolDeepLink(target.toolId)
+            is DeepLinkTarget.Tool -> handleToolDeepLink(target.toolId, target.customEntryKey)
         }
         return buildUpdate()
     }
@@ -102,7 +108,7 @@ class AppNavigationGate @Inject constructor(
     }
 
     fun openToolById(toolId: String): GateUpdate {
-        handleToolDeepLink(toolId)
+        handleToolDeepLink(toolId, customEntryKey = null)
         return buildUpdate()
     }
 
@@ -134,6 +140,7 @@ class AppNavigationGate @Inject constructor(
             val removed = unlockedBackStack.removeAt(unlockedBackStack.lastIndex)
             if (removed is UnlockNavKey) {
                 pendingUpgradeToolId = null
+                pendingUpgradeEntryKey = null
             }
         }
         return buildUpdate()
@@ -146,9 +153,11 @@ class AppNavigationGate @Inject constructor(
         if (unlockedBackStack.isEmpty()) {
             unlockedBackStack.add(HomeNavKey)
             val queuedToolId = pendingToolId
+            val queuedEntryKey = pendingCustomEntryKey
             pendingToolId = null
+            pendingCustomEntryKey = null
             if (queuedToolId != null) {
-                openToolByIdLocked(queuedToolId)
+                openToolByIdLocked(queuedToolId, queuedEntryKey)
             }
             return
         }
@@ -159,8 +168,10 @@ class AppNavigationGate @Inject constructor(
             if (descriptor != null &&
                 licenseCoordinator.evaluateAccess(descriptor, descriptor.id in disabledTools) is AccessDecision.Granted
             ) {
+                val targetKey = pendingUpgradeEntryKey ?: descriptor.entryKey
                 pendingUpgradeToolId = null
-                unlockedBackStack[unlockedBackStack.lastIndex] = descriptor.entryKey
+                pendingUpgradeEntryKey = null
+                unlockedBackStack[unlockedBackStack.lastIndex] = targetKey
                 pendingEffects.add(GateEffect.RecordToolOpened(descriptor.id))
             }
         }
@@ -176,7 +187,9 @@ class AppNavigationGate @Inject constructor(
             return
         }
         val activeKey = unlockedBackStack[activeToolEntryIndex]
-        val descriptor = toolRegistry.allTools().firstOrNull { it.entryKey == activeKey } ?: return
+        val descriptor = toolRegistry.allTools().firstOrNull { candidate ->
+            candidate.entryKey == activeKey || (activeKey is ChaoxingNavKey && candidate.id == CHAOXING_TOOL_ID)
+        } ?: return
         val decision = licenseCoordinator.evaluateAccess(
             target = descriptor,
             isRemoteDisabled = descriptor.id in disabledTools,
@@ -185,7 +198,7 @@ class AppNavigationGate @Inject constructor(
             while (unlockedBackStack.size > activeToolEntryIndex) {
                 unlockedBackStack.removeAt(unlockedBackStack.lastIndex)
             }
-            handleDeniedTool(descriptor.id, decision.reason)
+            handleDeniedTool(descriptor.id, decision.reason, customEntryKey = activeKey)
         }
     }
 
@@ -202,42 +215,50 @@ class AppNavigationGate @Inject constructor(
         }
     }
 
-    private fun handleToolDeepLink(toolId: String) {
+    private fun handleToolDeepLink(toolId: String, customEntryKey: NavKey?) {
         if (lastLicenseState is LicenseState.Unlocked) {
-            openToolByIdLocked(toolId)
+            openToolByIdLocked(toolId, customEntryKey)
         } else {
             pendingToolId = toolId
+            pendingCustomEntryKey = customEntryKey
         }
     }
 
-    private fun openToolByIdLocked(toolId: String) {
+    private fun openToolByIdLocked(toolId: String, customEntryKey: NavKey?) {
         val descriptor = toolRegistry.findById(toolId)
         if (descriptor == null) {
             pendingEffects.add(GateEffect.ShowToolNotFoundNotice(toolId))
             return
         }
-        evaluateAndNavigateToTool(descriptor)
+        evaluateAndNavigateToTool(descriptor, customEntryKey)
     }
 
-    private fun evaluateAndNavigateToTool(descriptor: ToolDescriptor) {
+    private fun evaluateAndNavigateToTool(descriptor: ToolDescriptor, customEntryKey: NavKey? = null) {
         val isRemoteDisabled = descriptor.id in disabledTools
         when (val decision = licenseCoordinator.evaluateAccess(descriptor, isRemoteDisabled = isRemoteDisabled)) {
             is AccessDecision.Granted -> {
                 pendingUpgradeToolId = null
-                if (unlockedBackStack.lastOrNull() != descriptor.entryKey) {
-                    unlockedBackStack.add(descriptor.entryKey)
+                pendingUpgradeEntryKey = null
+                val targetKey = customEntryKey ?: descriptor.entryKey
+                val currentTop = unlockedBackStack.lastOrNull()
+                if (currentTop is ChaoxingNavKey.Accounts && targetKey is ChaoxingNavKey.Accounts) {
+                    unlockedBackStack[unlockedBackStack.lastIndex] = targetKey
+                } else if (currentTop != targetKey) {
+                    unlockedBackStack.add(targetKey)
                 }
                 pendingEffects.add(GateEffect.RecordToolOpened(descriptor.id))
             }
-            is AccessDecision.Denied -> handleDeniedTool(descriptor.id, decision.reason)
+
+            is AccessDecision.Denied -> handleDeniedTool(descriptor.id, decision.reason, customEntryKey)
         }
     }
 
-    private fun handleDeniedTool(toolId: String, reason: AccessDenialReason) {
+    private fun handleDeniedTool(toolId: String, reason: AccessDenialReason, customEntryKey: NavKey? = null) {
         when (reason) {
             AccessDenialReason.RemotelyDisabled -> {
                 pendingEffects.add(GateEffect.ShowToolDisabledNotice(toolId, disabledTools[toolId]))
             }
+
             AccessDenialReason.EngineInitializing -> Unit
             AccessDenialReason.Expired,
             is AccessDenialReason.InsufficientTier,
@@ -245,6 +266,7 @@ class AppNavigationGate @Inject constructor(
             is AccessDenialReason.MissingScope,
             -> {
                 pendingUpgradeToolId = toolId
+                pendingUpgradeEntryKey = customEntryKey
                 pushOrReplaceTopUnlock(UnlockNavKey(manageMode = true))
                 pendingEffects.add(GateEffect.ShowToolLockedNotice(toolId, reason))
             }
@@ -268,6 +290,7 @@ class AppNavigationGate @Inject constructor(
                 initialActivationCode = pendingActivationCode,
                 blockedToolId = pendingToolId,
             )
+
             is LicenseState.Unlocked -> GateUiPhase.Unlocked(
                 backStack = unlockedBackStack.toList(),
             )

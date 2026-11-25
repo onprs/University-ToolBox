@@ -48,6 +48,7 @@ internal fun SignExecutionResult.displayStatusText(): String = when (this) {
     is SignExecutionResult.RequiresExtraInput -> "缺少参数：$message"
     is SignExecutionResult.SessionExpired -> "会话过期：$message"
     is SignExecutionResult.QuotaRestricted -> "配额受限：$message"
+    is SignExecutionResult.DuplicateDeviceCode -> "设备冲突：$message"
     is SignExecutionResult.Rejected -> "未通过：$message"
     is SignExecutionResult.Failed -> "执行失败：${error.message}"
 }

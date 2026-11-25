@@ -30,6 +30,8 @@ class ChaoxingAuthRemoteDataSource @Inject constructor(
         plainPassword: String,
         fid: String = ChaoxingEndpointConfig.DEFAULT_FID,
         validate: String = "",
+        isPasswordEncrypted: Boolean = false,
+        customUserAgent: String? = null,
     ): AppResult<ChaoxingLoginOutcome> = withContext(dispatchers.io) {
         val trimmedAccount = accountInput.trim()
         if (trimmedAccount.isEmpty() || plainPassword.isEmpty()) {
@@ -37,20 +39,27 @@ class ChaoxingAuthRemoteDataSource @Inject constructor(
                 ChaoxingLoginOutcome.InvalidCredentials("账号或密码不能为空"),
             )
         }
+        val userAgent = customUserAgent?.takeIf { it.isNotBlank() }
+            ?: ChaoxingEndpointConfig.MOBILE_WEB_USER_AGENT
 
         executor.executeText(
             Request.Builder()
                 .url(endpointConfig.mloginPageUrl)
-                .header(ChaoxingHttpExecutor.HEADER_USER_AGENT, ChaoxingEndpointConfig.MOBILE_WEB_USER_AGENT)
+                .header(ChaoxingHttpExecutor.HEADER_USER_AGENT, userAgent)
                 .tag(AccountContext::class.java, AccountContext(provisionalAccountId))
                 .get()
                 .build(),
         )
 
+        val encryptedPwd = if (isPasswordEncrypted) {
+            plainPassword.trim()
+        } else {
+            ChaoxingLoginCipher.encrypt(plainPassword)
+        }
         val formBody = FormBody.Builder()
             .add("fid", fid.ifBlank { ChaoxingEndpointConfig.DEFAULT_FID })
             .add("uname", ChaoxingLoginCipher.encrypt(trimmedAccount))
-            .add("password", ChaoxingLoginCipher.encrypt(plainPassword))
+            .add("password", encryptedPwd)
             .add("refer", ChaoxingEndpointConfig.DEFAULT_REFER)
             .add("t", "true")
             .add("forbidotherlogin", "0")
@@ -62,7 +71,7 @@ class ChaoxingAuthRemoteDataSource @Inject constructor(
 
         val loginRequest = Request.Builder()
             .url(endpointConfig.fanyaLoginUrl)
-            .header(ChaoxingHttpExecutor.HEADER_USER_AGENT, ChaoxingEndpointConfig.MOBILE_WEB_USER_AGENT)
+            .header(ChaoxingHttpExecutor.HEADER_USER_AGENT, userAgent)
             .header(ChaoxingHttpExecutor.HEADER_REFERER, endpointConfig.mloginPageUrl)
             .header(ChaoxingHttpExecutor.HEADER_ORIGIN, endpointConfig.passportBaseUrl)
             .header(ChaoxingHttpExecutor.HEADER_X_REQUESTED_WITH, ChaoxingHttpExecutor.X_REQUESTED_WITH_AJAX)
@@ -79,7 +88,7 @@ class ChaoxingAuthRemoteDataSource @Inject constructor(
                 DomainError.Network("登录响应解析失败", httpCode = response.code),
             )
 
-        mapLoginDto(dto, provisionalAccountId, trimmedAccount)
+        mapLoginDto(dto, provisionalAccountId, trimmedAccount, userAgent)
     }
 
     /** 初始化桌面端扫码登录临时会话并提取二维码地址。 */
@@ -181,11 +190,17 @@ class ChaoxingAuthRemoteDataSource @Inject constructor(
     }
 
     /** 获取当前已认证账号的脱敏用户资料并校验登录态。 */
-    suspend fun fetchAccountProfile(accountId: String, fallbackPhone: String = ""): AppResult<ChaoxingAccountProfile> {
+    suspend fun fetchAccountProfile(
+        accountId: String,
+        fallbackPhone: String = "",
+        customUserAgent: String? = null,
+    ): AppResult<ChaoxingAccountProfile> {
         return withContext(dispatchers.io) {
+            val userAgent = customUserAgent?.takeIf { it.isNotBlank() }
+                ?: ChaoxingEndpointConfig.MOBILE_WEB_USER_AGENT
             val request = Request.Builder()
                 .url(endpointConfig.userLogin4UnameUrl)
-                .header(ChaoxingHttpExecutor.HEADER_USER_AGENT, ChaoxingEndpointConfig.MOBILE_WEB_USER_AGENT)
+                .header(ChaoxingHttpExecutor.HEADER_USER_AGENT, userAgent)
                 .tag(AccountContext::class.java, AccountContext(accountId))
                 .get()
                 .build()
@@ -251,6 +266,7 @@ class ChaoxingAuthRemoteDataSource @Inject constructor(
         dto: FanyaLoginResponseDto,
         provisionalAccountId: String,
         accountInput: String,
+        userAgent: String? = null,
     ): AppResult<ChaoxingLoginOutcome> {
         if (dto.status && dto.containTwoFactorLogin) {
             val targetUrl = dto.twoFactorLoginUrl ?: dto.twoFactorLoginPCUrl.orEmpty()
@@ -262,7 +278,9 @@ class ChaoxingAuthRemoteDataSource @Inject constructor(
             )
         }
         if (dto.status) {
-            return when (val profileRes = finalizeAuthenticatedProfile(provisionalAccountId, accountInput)) {
+            return when (
+                val profileRes = finalizeAuthenticatedProfile(provisionalAccountId, accountInput, userAgent)
+            ) {
                 is AppResult.Success -> AppResult.Success(
                     ChaoxingLoginOutcome.Authenticated(
                         accountId = profileRes.data.first,
@@ -293,8 +311,9 @@ class ChaoxingAuthRemoteDataSource @Inject constructor(
     private suspend fun finalizeAuthenticatedProfile(
         provisionalAccountId: String,
         fallbackPhone: String,
+        userAgent: String? = null,
     ): AppResult<Pair<String, ChaoxingAccountProfile>> {
-        val profile = when (val res = fetchAccountProfile(provisionalAccountId, fallbackPhone)) {
+        val profile = when (val res = fetchAccountProfile(provisionalAccountId, fallbackPhone, userAgent)) {
             is AppResult.Success -> res.data
             is AppResult.Failure -> return res
         }

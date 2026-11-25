@@ -15,6 +15,8 @@ data class SignAccountIdentity(
     val fid: String,
     val maskedAccount: String,
     val displayName: String,
+    val deviceCode: String = "",
+    val clientUserAgent: String? = null,
 )
 
 /**
@@ -95,6 +97,8 @@ sealed interface SignExecutionResult {
 
     data class QuotaRestricted(val message: String) : SignExecutionResult
 
+    data class DuplicateDeviceCode(val message: String) : SignExecutionResult
+
     data class Rejected(val message: String) : SignExecutionResult
 
     data class Failed(val error: DomainError) : SignExecutionResult
@@ -132,6 +136,7 @@ internal fun ChaoxingSignRawOutcome.toExecutionResult(activeId: Long): SignExecu
     is ChaoxingSignRawOutcome.OutOfRange -> SignExecutionResult.Rejected(message)
     is ChaoxingSignRawOutcome.PhotoAuthError -> SignExecutionResult.Rejected(message)
     is ChaoxingSignRawOutcome.Ended -> SignExecutionResult.Rejected(message)
+    is ChaoxingSignRawOutcome.DuplicateDeviceCode -> SignExecutionResult.DuplicateDeviceCode(message)
     is ChaoxingSignRawOutcome.SessionExpired -> SignExecutionResult.SessionExpired(message)
     is ChaoxingSignRawOutcome.Rejected -> SignExecutionResult.Rejected(message)
 }

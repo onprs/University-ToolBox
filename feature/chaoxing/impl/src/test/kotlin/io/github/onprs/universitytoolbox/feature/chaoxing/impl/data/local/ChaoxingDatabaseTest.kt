@@ -7,6 +7,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -135,6 +136,62 @@ class ChaoxingDatabaseTest {
         val recent = recordDao.observeRecent().first()
         assertEquals(listOf(5002L, 5001L), recent.map { it.activeId })
         assertEquals(1, recordDao.observeByAccount("cx_101").first().size)
+    }
+
+    @Test
+    fun `preset location dao persists orders by newest first and deletes cleanly`() = runTest {
+        val presetDao = database.presetLocationDao()
+        val id1 = presetDao.insert(
+            ChaoxingPresetLocationEntity(
+                title = "第一教学楼",
+                address = "海淀区双清路第一教学楼",
+                latitude = 40.008123,
+                longitude = 116.332456,
+                createdAtMs = 1000L,
+            ),
+        )
+        val id2 = presetDao.insert(
+            ChaoxingPresetLocationEntity(
+                title = "综合体育馆",
+                address = "海淀区双清路综合体育馆",
+                latitude = 40.010234,
+                longitude = 116.335678,
+                createdAtMs = 2000L,
+            ),
+        )
+
+        val all = presetDao.observeAll().first()
+        assertEquals(listOf(id2, id1), all.map { it.id })
+        assertEquals("综合体育馆", all.first().title)
+
+        presetDao.deleteById(id2)
+        val remaining = presetDao.getAll()
+        assertEquals(1, remaining.size)
+        assertEquals("第一教学楼", remaining.single().title)
+    }
+
+    @Test
+    fun `account device identity update and preference dao persist accurately`() = runTest {
+        val accountDao = database.accountDao()
+        val preferenceDao = database.preferenceDao()
+
+        accountDao.upsert(sampleAccount(accountId = "cx_201", isPrimary = false, createdAt = 500L))
+        accountDao.updateDeviceIdentity(
+            accountId = "cx_201",
+            deviceCode = "UNIFIED_DC_201",
+            isUnified = true,
+            uniqueId = "uid_201",
+            deviceModel = "ALN-AL00",
+        )
+        val updated = accountDao.getById("cx_201")!!
+        assertEquals("UNIFIED_DC_201", updated.deviceCode)
+        assertTrue(updated.isUnifiedDeviceCode)
+        assertEquals("uid_201", updated.clientUniqueId)
+        assertEquals("ALN-AL00", updated.deviceModel)
+
+        preferenceDao.upsert(ChaoxingPreferenceEntity(key = "hide_device_code_badge", value = "true"))
+        assertEquals("true", preferenceDao.getValue("hide_device_code_badge"))
+        assertEquals("true", preferenceDao.observeValue("hide_device_code_badge").first())
     }
 
     private fun sampleAccount(accountId: String, isPrimary: Boolean, createdAt: Long): ChaoxingAccountEntity =

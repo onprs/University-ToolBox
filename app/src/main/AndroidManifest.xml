@@ -59,6 +59,7 @@
                 <data android:scheme="universitytoolbox" android:host="activate" />
                 <data android:scheme="universitytoolbox" android:host="license" />
                 <data android:scheme="universitytoolbox" android:host="tool" />
+                <data android:scheme="universitytoolbox" android:host="chaoxing-bind" />
             </intent-filter>
         </activity>
     </application>

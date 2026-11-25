@@ -128,7 +128,7 @@ class ChaoxingProtocolParserTest {
                           "id": 200000001,
                           "name": "离散数学",
                           "teacherfactor": "王老师",
-                          "imageurl": "https://p.ananas.chaoxing.com/star4/demo/240_130c.jpg"
+                          "imageurl": "http://p.ananas.chaoxing.com/star4/demo/240_130c.jpg"
                         }
                       ]
                     }
@@ -146,6 +146,7 @@ class ChaoxingProtocolParserTest {
         val courses = ChaoxingDomainMapper.toCourses(courseDto)
         assertEquals(1, courses.size)
         assertEquals("离散数学", courses[0].name)
+        assertEquals("https://p.ananas.chaoxing.com/star4/demo/240_130c.jpg", courses[0].coverUrl)
         assertTrue(courses[0].isPinned)
     }
 
@@ -244,5 +245,66 @@ class ChaoxingProtocolParserTest {
             ChaoxingSignResponseParser.parse("photoAuthError_PCR007")
                 is ChaoxingSignRawOutcome.PhotoAuthError,
         )
+        assertTrue(
+            ChaoxingSignResponseParser.parse("errorLocation_168.5")
+                is ChaoxingSignRawOutcome.OutOfRange,
+        )
+    }
+
+    @Test
+    fun `maps getPPTActiveInfo gcj02 fallback to bd09 and ignores zero placeholder coordinates`() {
+        val hiddenCoordJson = """
+            {
+              "result": 1,
+              "data": {
+                "id": 8001,
+                "clazzid": 1001,
+                "name": "隐藏坐标位置签到",
+                "activeType": 2,
+                "otherId": 4,
+                "status": 1,
+                "ifopenAddress": 1,
+                "locationText": "第三教学楼",
+                "locationRange": "100",
+                "latitude": 0.0,
+                "longitude": 0.0,
+                "locationLatitude": "",
+                "locationLongitude": "",
+                "locationLatitude_gd": "",
+                "locationLongitude_gd": ""
+              }
+            }
+        """.trimIndent()
+        val hiddenDto = ChaoxingJson.codec.decodeFromString<PptActiveInfoResponseDto>(hiddenCoordJson)
+        val hiddenDetail = ChaoxingDomainMapper.toActiveDetail(hiddenDto.data!!)
+        assertFalse(hiddenDetail.hasTargetCoordinates)
+        assertNull(hiddenDetail.targetLatitude)
+        assertNull(hiddenDetail.targetLongitude)
+
+        val gdOnlyJson = """
+            {
+              "result": 1,
+              "data": {
+                "id": 8002,
+                "clazzid": 1001,
+                "name": "高德坐标位置签到",
+                "activeType": 2,
+                "otherId": 4,
+                "status": 1,
+                "ifopenAddress": 1,
+                "locationLatitude": "",
+                "locationLongitude": "",
+                "locationLatitude_gd": "39.908722",
+                "locationLongitude_gd": "116.397499"
+              }
+            }
+        """.trimIndent()
+        val gdDto = ChaoxingJson.codec.decodeFromString<PptActiveInfoResponseDto>(gdOnlyJson)
+        val gdDetail = ChaoxingDomainMapper.toActiveDetail(gdDto.data!!)
+        assertTrue(gdDetail.hasTargetCoordinates)
+        assertNotNull(gdDetail.targetLatitude)
+        assertNotNull(gdDetail.targetLongitude)
+        assertTrue(kotlin.math.abs(gdDetail.targetLatitude!! - 39.915) < 0.01)
+        assertTrue(kotlin.math.abs(gdDetail.targetLongitude!! - 116.404) < 0.01)
     }
 }

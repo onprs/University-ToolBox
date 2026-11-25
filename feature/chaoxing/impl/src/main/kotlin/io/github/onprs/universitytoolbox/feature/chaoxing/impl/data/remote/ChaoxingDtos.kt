@@ -217,13 +217,19 @@ data class PptActiveInfoDto(
     val locationText: String? = null,
     @Serializable(with = FlexibleStringSerializer::class)
     val locationRange: String? = null,
-    val latitude: Double? = null,
-    val longitude: Double? = null,
+    @Serializable(with = FlexibleStringSerializer::class)
+    val latitude: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class)
+    val longitude: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class)
     val locationLatitude: String? = null,
+    @Serializable(with = FlexibleStringSerializer::class)
     val locationLongitude: String? = null,
     @SerialName("locationLatitude_gd")
+    @Serializable(with = FlexibleStringSerializer::class)
     val locationLatitudeGd: String? = null,
     @SerialName("locationLongitude_gd")
+    @Serializable(with = FlexibleStringSerializer::class)
     val locationLongitudeGd: String? = null,
     val starttime: Long = 0L,
     val endtime: Long? = null,
@@ -288,3 +294,9 @@ data class QrAuthStatusResponseDto(
     @Serializable(with = FlexibleStringSerializer::class)
     val uid: String? = null,
 )
+
+@Serializable
+data class SignInRecordResponseDto(val result: Int = 0, val data: SignInRecordDataDto? = null)
+
+@Serializable
+data class SignInRecordDataDto(val deviceCode: String? = null, val useragent: String? = null)

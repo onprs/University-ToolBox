@@ -17,9 +17,9 @@ sealed interface ChaoxingNavKey : NavKey {
     @Serializable
     data object Dashboard : ChaoxingNavKey
 
-    /** 多账号管理与登录绑定页面（密码登录、二维码扫码与配额状态）。 */
+    /** 多账号管理与登录绑定页面（支持密码登录、客户端扫码及账号绑定分享载荷导入）。 */
     @Serializable
-    data object Accounts : ChaoxingNavKey
+    data class Accounts(val initialSharePayload: String? = null) : ChaoxingNavKey
 
     /** 指定课程的活动列表、签到监控与执行入口。 */
     @Serializable

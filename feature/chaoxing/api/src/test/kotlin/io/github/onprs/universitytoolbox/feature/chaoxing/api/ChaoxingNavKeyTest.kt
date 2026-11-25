@@ -18,7 +18,10 @@ class ChaoxingNavKeyTest {
     fun `chaoxing nav keys serialize and deserialize symmetrically`() {
         val keys: List<ChaoxingNavKey> = listOf(
             ChaoxingNavKey.Dashboard,
-            ChaoxingNavKey.Accounts,
+            ChaoxingNavKey.Accounts(),
+            ChaoxingNavKey.Accounts(
+                initialSharePayload = "universitytoolbox://chaoxing-bind?phone=13800138000&pwd=abc",
+            ),
             ChaoxingNavKey.CourseActivities(
                 accountId = "acc-01",
                 courseId = 200000001L,

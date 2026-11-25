@@ -1,6 +1,9 @@
 package io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.screen
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -11,9 +14,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.ManageAccounts
 import androidx.compose.material.icons.outlined.PushPin
@@ -33,16 +40,20 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil3.compose.AsyncImage
+import coil3.compose.SubcomposeAsyncImage
+import coil3.compose.SubcomposeAsyncImageContent
 import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxLinearProgressBar
 import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxStatusBadge
 import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxRadius
@@ -88,7 +99,7 @@ fun ChaoxingDashboardScreen(
                             contentDescription = stringResource(R.string.chaoxing_records_title),
                         )
                     }
-                    IconButton(onClick = { onNavigate(ChaoxingNavKey.Accounts) }) {
+                    IconButton(onClick = { onNavigate(ChaoxingNavKey.Accounts()) }) {
                         Icon(
                             imageVector = Icons.Outlined.ManageAccounts,
                             contentDescription = stringResource(R.string.chaoxing_accounts_title),
@@ -131,6 +142,7 @@ private fun DashboardBody(
     onNavigate: (ChaoxingNavKey) -> Unit,
 ) {
     Column(modifier = modifier) {
+        Box(modifier = Modifier.size(1.dp).focusable())
         DevStubBanner(licenseState = state.licenseState)
 
         val decision = state.accessDecision
@@ -152,7 +164,7 @@ private fun DashboardBody(
                 description = stringResource(R.string.chaoxing_empty_accounts_desc),
                 icon = Icons.Outlined.School,
                 actionLabel = stringResource(R.string.chaoxing_add_account),
-                onAction = { onNavigate(ChaoxingNavKey.Accounts) },
+                onAction = { onNavigate(ChaoxingNavKey.Accounts()) },
             )
             return
         }
@@ -217,6 +229,7 @@ private fun CourseFilterHeader(
     onSearchChange: (String) -> Unit,
     onToggleArchived: (Boolean) -> Unit,
 ) {
+    val focusManager = LocalFocusManager.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -228,6 +241,20 @@ private fun CourseFilterHeader(
             onValueChange = onSearchChange,
             singleLine = true,
             leadingIcon = { Icon(imageVector = Icons.Outlined.Search, contentDescription = null) },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(
+                        onClick = {
+                            onSearchChange("")
+                            focusManager.clearFocus()
+                        },
+                    ) {
+                        Icon(imageVector = Icons.Outlined.Close, contentDescription = null)
+                    }
+                }
+            },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { focusManager.clearFocus() }),
             placeholder = { Text(text = stringResource(R.string.chaoxing_search_courses_hint)) },
             modifier = Modifier.fillMaxWidth(),
         )
@@ -274,7 +301,13 @@ private fun CourseListSection(
         )
         return
     }
+    val focusManager = LocalFocusManager.current
+    val listState = rememberLazyListState()
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) focusManager.clearFocus()
+    }
     LazyColumn(
+        state = listState,
         contentPadding = PaddingValues(ToolboxSpacing.medium),
         verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.mediumSmall),
     ) {
@@ -282,6 +315,7 @@ private fun CourseListSection(
             CourseCard(
                 course = course,
                 onClick = {
+                    focusManager.clearFocus()
                     val accountId = selectedAccount?.accountId ?: course.accountId
                     onNavigate(
                         ChaoxingNavKey.CourseActivities(
@@ -306,14 +340,7 @@ private fun CourseCard(course: ChaoxingCourseEntity, onClick: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.mediumSmall),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AsyncImage(
-                model = course.coverUrl,
-                contentDescription = course.name,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .size(width = 76.dp, height = 56.dp)
-                    .clip(RoundedCornerShape(ToolboxRadius.chip)),
-            )
+            CourseCoverThumbnail(coverUrl = course.coverUrl, contentDescription = course.name)
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.extraSmall),
@@ -358,5 +385,41 @@ private fun CourseCard(course: ChaoxingCourseEntity, onClick: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun CourseCoverThumbnail(coverUrl: String, contentDescription: String) {
+    val placeholder: @Composable () -> Unit = {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.secondaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.School,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.size(24.dp),
+            )
+        }
+    }
+    val coverModifier = Modifier
+        .size(width = 76.dp, height = 56.dp)
+        .clip(RoundedCornerShape(ToolboxRadius.chip))
+
+    if (coverUrl.isBlank()) {
+        Box(modifier = coverModifier) { placeholder() }
+    } else {
+        SubcomposeAsyncImage(
+            model = coverUrl,
+            contentDescription = contentDescription,
+            contentScale = ContentScale.Crop,
+            modifier = coverModifier,
+            loading = { placeholder() },
+            error = { placeholder() },
+            success = { SubcomposeAsyncImageContent() },
+        )
     }
 }

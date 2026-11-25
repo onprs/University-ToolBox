@@ -3,6 +3,7 @@ package io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinat
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import io.github.onprs.universitytoolbox.core.common.dispatcher.DefaultDispatcherProvider
+import io.github.onprs.universitytoolbox.core.common.result.AppResult
 import io.github.onprs.universitytoolbox.core.common.time.TimeProvider
 import io.github.onprs.universitytoolbox.core.license.api.LicenseCoordinator
 import io.github.onprs.universitytoolbox.core.license.api.LicenseEngine
@@ -17,10 +18,13 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.Chaox
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingEndpointConfig
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingHtmlParser
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingHttpExecutor
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingLoginCipher
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingRemoteDataSource
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.AccountCookieVault
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.AccountSessionInterceptor
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.InMemoryAccountCookieStorage
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.device.ChaoxingSharedAccountCodec
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.device.ChaoxingSharedAccountPayload
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.ratelimit.ChaoxingRateLimitCoordinator
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.ratelimit.JitterStrategy
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.ratelimit.TokenBucketRateLimiter
@@ -46,6 +50,8 @@ import mockwebserver3.RecordedRequest
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -290,6 +296,55 @@ class ChaoxingQuotaAndSignStrategyTest {
 
         val savedRecords = database.signRecordDao().observeRecent().first()
         assertEquals(3, savedRecords.size)
+    }
+
+    @Test
+    fun `share link imports unified device code and submits distinct deviceCode per account`() = runTest {
+        licenseEngine.setUnlocked(LicenseTier.STANDARD, maxSubAccounts = 2)
+
+        // 1. 主账号密码登录：默认绑定本机统一设备码，并支持导出分享包
+        val primaryBound = accountManager.bindWithPassword("13800000001", "pwd_primary") as AccountBindResult.Bound
+        assertTrue(primaryBound.account.isUnifiedDeviceCode)
+        val shareBundleRes = accountManager.createShareBundle(primaryBound.account.accountId)
+        assertTrue(shareBundleRes is AppResult.Success)
+        val primaryShareUrl = (shareBundleRes as AppResult.Success).data.shareUrl
+        assertTrue(primaryShareUrl.contains("dc="))
+
+        // 2. 子账号先使用普通密码登录：分配独立固定随机设备码（isUnifiedDeviceCode = false）
+        val subPlainBound = accountManager.bindWithPassword("13800000002", "pwd_sub") as AccountBindResult.Bound
+        assertFalse(subPlainBound.account.isUnifiedDeviceCode)
+        assertTrue(subPlainBound.account.deviceCode.isNotBlank())
+        assertNotEquals(primaryBound.account.deviceCode, subPlainBound.account.deviceCode)
+
+        // 3. 子账号随后通过绑定分享链接重新导入：原地升级为统一设备码，无需先解绑
+        val subShareUrl = ChaoxingSharedAccountCodec.encodeShareUrl(
+            ChaoxingSharedAccountPayload(
+                accountInput = "13800000002",
+                encryptedPassword = ChaoxingLoginCipher.encrypt("pwd_sub"),
+                displayName = "代签同学",
+                deviceCode = "OWNER_UNIFIED_DC_888",
+                uniqueId = "owner_uid_888",
+                deviceModel = "24031PN0DC",
+            ),
+        )
+        val imported = accountManager.importFromSharedText(subShareUrl) as AccountBindResult.Bound
+        assertEquals(subPlainBound.account.accountId, imported.account.accountId)
+        assertTrue(imported.updatedDeviceBindingOnly)
+        assertTrue(imported.account.isUnifiedDeviceCode)
+        assertEquals("OWNER_UNIFIED_DC_888", imported.account.deviceCode)
+
+        // 4. 协同签到时每个账号均在 stuSignajax 请求中提交各自绑定的 deviceCode
+        recordedRequests.clear()
+        currentActiveInfoJson = activeInfoJson(otherId = 0, ifPhoto = 0, needVcode = 0)
+        val summary = batchCoordinator.executeForAccounts(
+            targetAccountIds = listOf(primaryBound.account.accountId, imported.account.accountId),
+            courseName = "计算机网络",
+            activityTitle = "课堂签到",
+            request = SignExecutionRequest(courseId = 2001L, clazzId = 1001L, activeId = 7001L),
+        )
+        assertTrue(summary.reports.all { it.result is SignExecutionResult.Success })
+        assertTrue(recordedRequests.any { it.contains("deviceCode=${primaryBound.account.deviceCode}") })
+        assertTrue(recordedRequests.any { it.contains("deviceCode=OWNER_UNIFIED_DC_888") })
     }
 
     private fun configureMockDispatcher() {

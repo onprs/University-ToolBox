@@ -8,17 +8,26 @@ import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.onprs.universitytoolbox.core.common.result.AppResult
+import io.github.onprs.universitytoolbox.core.common.time.TimeProvider
 import io.github.onprs.universitytoolbox.core.license.api.LicenseCoordinator
 import io.github.onprs.universitytoolbox.core.scanner.BarcodeScanner
 import io.github.onprs.universitytoolbox.feature.chaoxing.api.ChaoxingNavKey
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingAccountDao
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingDeviceSettingsRepository
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingPresetLocationDao
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingPresetLocationEntity
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.InMemoryChaoxingDeviceSettingsRepository
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingQrParser
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingRemoteDataSource
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.MultiAccountSignCoordinator
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.ChaoxingLocationService
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.CoordinateConverter
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.GeoPoint
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.sign.SignExecutionRequest
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.sign.SignExecutionResult
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.ChaoxingSignExecutionUiState
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.ImageBytesHolder
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,15 +35,43 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 @HiltViewModel(assistedFactory = ChaoxingSignExecutionViewModel.Factory::class)
-@Suppress("TooManyFunctions")
+@Suppress("TooManyFunctions", "LongParameterList")
 class ChaoxingSignExecutionViewModel @AssistedInject constructor(
     @Assisted private val route: ChaoxingNavKey.SignExecution,
     private val accountDao: ChaoxingAccountDao,
+    private val presetLocationDao: ChaoxingPresetLocationDao,
     private val remoteDataSource: ChaoxingRemoteDataSource,
     private val signCoordinator: MultiAccountSignCoordinator,
     private val licenseCoordinator: LicenseCoordinator,
     private val barcodeScanner: BarcodeScanner,
+    private val locationService: ChaoxingLocationService,
+    private val timeProvider: TimeProvider,
+    private val deviceSettingsRepository: ChaoxingDeviceSettingsRepository,
 ) : ViewModel() {
+    @Suppress("LongParameterList")
+    constructor(
+        route: ChaoxingNavKey.SignExecution,
+        accountDao: ChaoxingAccountDao,
+        presetLocationDao: ChaoxingPresetLocationDao,
+        remoteDataSource: ChaoxingRemoteDataSource,
+        signCoordinator: MultiAccountSignCoordinator,
+        licenseCoordinator: LicenseCoordinator,
+        barcodeScanner: BarcodeScanner,
+        locationService: ChaoxingLocationService,
+        timeProvider: TimeProvider,
+    ) : this(
+        route = route,
+        accountDao = accountDao,
+        presetLocationDao = presetLocationDao,
+        remoteDataSource = remoteDataSource,
+        signCoordinator = signCoordinator,
+        licenseCoordinator = licenseCoordinator,
+        barcodeScanner = barcodeScanner,
+        locationService = locationService,
+        timeProvider = timeProvider,
+        deviceSettingsRepository = InMemoryChaoxingDeviceSettingsRepository(),
+    )
+
     private val mutableUiState = MutableStateFlow(
         ChaoxingSignExecutionUiState(
             accountId = route.accountId,
@@ -46,8 +83,39 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
     )
     val uiState: StateFlow<ChaoxingSignExecutionUiState> = mutableUiState.asStateFlow()
 
+    private var mapSearchJob: Job? = null
+    private var reverseGeocodeJob: Job? = null
+
     init {
+        observePresetLocations()
+        observeDeviceBadgeSetting()
         loadDetailAndAccounts()
+    }
+
+    private fun observePresetLocations() {
+        viewModelScope.launch {
+            presetLocationDao.observeAll().collect { presets ->
+                mutableUiState.update { it.copy(presetLocations = presets) }
+            }
+        }
+    }
+
+    private fun observeDeviceBadgeSetting() {
+        viewModelScope.launch {
+            deviceSettingsRepository.hideDeviceCodeBadge.collect { hide ->
+                mutableUiState.update { it.copy(hideDeviceCodeBadge = hide) }
+            }
+        }
+    }
+
+    fun setDeviceInfoDialogOpen(open: Boolean) {
+        mutableUiState.update { it.copy(isDeviceInfoDialogOpen = open) }
+    }
+
+    fun setHideDeviceCodeBadge(hide: Boolean) {
+        viewModelScope.launch {
+            deviceSettingsRepository.setHideDeviceCodeBadge(hide)
+        }
     }
 
     fun loadDetailAndAccounts() {
@@ -58,12 +126,16 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
             when (val detailRes = remoteDataSource.fetchActiveDetail(route.accountId, route.activeId)) {
                 is AppResult.Success -> {
                     val detail = detailRes.data
+                    val initialLat = detail.targetLatitude?.let(CoordinateConverter::formatCoordinate).orEmpty()
+                    val initialLng = detail.targetLongitude?.let(CoordinateConverter::formatCoordinate).orEmpty()
                     mutableUiState.update { current ->
                         current.copy(
                             detail = detail,
                             isLoadingDetail = false,
                             availableAccounts = accounts,
                             maxSubAccountsQuota = maxSub,
+                            latitudeInput = current.latitudeInput.ifBlank { initialLat },
+                            longitudeInput = current.longitudeInput.ifBlank { initialLng },
                             addressInput = current.addressInput.ifBlank { detail.locationText.orEmpty() },
                         )
                     }
@@ -144,6 +216,22 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
         mutableUiState.update { it.copy(isScannerSheetOpen = open) }
     }
 
+    fun setPresetSheetOpen(open: Boolean) {
+        mutableUiState.update { it.copy(isPresetSheetOpen = open) }
+    }
+
+    fun setMapPickerOpen(open: Boolean) {
+        mutableUiState.update {
+            it.copy(
+                isMapPickerOpen = open,
+                mapSearchQuery = if (open) it.mapSearchQuery else "",
+                mapSearchResults = if (open) it.mapSearchResults else emptyList(),
+                mapExternalJumpPlace = if (open) it.mapExternalJumpPlace else null,
+                mapReverseGeocodedAddress = if (open) it.mapReverseGeocodedAddress else null,
+            )
+        }
+    }
+
     fun updateSignCode(code: String) {
         mutableUiState.update { it.copy(signCodeInput = code, inputHintMessage = null) }
     }
@@ -161,19 +249,158 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
 
     fun applyTargetCourseLocation() {
         val detail = uiState.value.detail ?: return
-        val lat = detail.targetLatitudeGd ?: detail.targetLatitude
-        val lng = detail.targetLongitudeGd ?: detail.targetLongitude
+        val lat = detail.targetLatitude
+        val lng = detail.targetLongitude
         if (lat == null || lng == null) {
-            mutableUiState.update { it.copy(inputHintMessage = "当前签到未公开指定坐标，请手动输入或使用设备定位") }
+            setPresetSheetOpen(true)
             return
         }
         mutableUiState.update {
             it.copy(
-                latitudeInput = lat.toString(),
-                longitudeInput = lng.toString(),
-                addressInput = detail.locationText.orEmpty(),
-                inputHintMessage = "已填入活动预设地点坐标",
+                latitudeInput = CoordinateConverter.formatCoordinate(lat),
+                longitudeInput = CoordinateConverter.formatCoordinate(lng),
+                addressInput = detail.locationText.orEmpty().ifBlank { it.addressInput },
+                isPresetSheetOpen = false,
+                inputHintMessage = "已填入本次签到要求地点坐标",
             )
+        }
+    }
+
+    fun applyPresetLocation(preset: ChaoxingPresetLocationEntity) {
+        mutableUiState.update {
+            it.copy(
+                latitudeInput = CoordinateConverter.formatCoordinate(preset.latitude),
+                longitudeInput = CoordinateConverter.formatCoordinate(preset.longitude),
+                addressInput = preset.address.ifBlank { preset.title },
+                isPresetSheetOpen = false,
+                inputHintMessage = "已填入预设地点：${preset.title}",
+            )
+        }
+    }
+
+    fun savePresetLocation(title: String, latitude: Double, longitude: Double, address: String) {
+        val normalizedTitle = title.trim().ifBlank { address.trim().ifBlank { "常用签到地点" } }
+        val normalizedAddress = address.trim().ifBlank { normalizedTitle }
+        viewModelScope.launch {
+            presetLocationDao.insert(
+                ChaoxingPresetLocationEntity(
+                    title = normalizedTitle,
+                    address = normalizedAddress,
+                    latitude = latitude,
+                    longitude = longitude,
+                    createdAtMs = timeProvider.currentTimeMillis(),
+                ),
+            )
+            mutableUiState.update {
+                it.copy(
+                    latitudeInput = CoordinateConverter.formatCoordinate(latitude),
+                    longitudeInput = CoordinateConverter.formatCoordinate(longitude),
+                    addressInput = normalizedAddress,
+                    isMapPickerOpen = false,
+                    inputHintMessage = "已保存预设地点：$normalizedTitle",
+                )
+            }
+        }
+    }
+
+    fun deletePresetLocation(id: Long) {
+        viewModelScope.launch {
+            presetLocationDao.deleteById(id)
+        }
+    }
+
+    fun confirmMapSelection(bd09Point: GeoPoint, address: String) {
+        mutableUiState.update { current ->
+            val resolvedAddr = address.ifBlank {
+                current.detail?.locationText.orEmpty().ifBlank { current.addressInput }
+            }
+            current.copy(
+                latitudeInput = CoordinateConverter.formatCoordinate(bd09Point.latitude),
+                longitudeInput = CoordinateConverter.formatCoordinate(bd09Point.longitude),
+                addressInput = resolvedAddr,
+                isMapPickerOpen = false,
+                inputHintMessage = "已从地图选定签到位置",
+            )
+        }
+    }
+
+    fun useCurrentDeviceLocation(jumpInMap: Boolean = false) {
+        if (uiState.value.isLocatingCurrent) {
+            return
+        }
+        viewModelScope.launch {
+            mutableUiState.update { it.copy(isLocatingCurrent = true, inputHintMessage = null) }
+            when (val res = locationService.getCurrentLocation()) {
+                is AppResult.Success -> {
+                    val place = res.data
+                    mutableUiState.update { current ->
+                        val nextAddr = place.address.ifBlank {
+                            current.addressInput.ifBlank { current.detail?.locationText.orEmpty() }
+                        }
+                        current.copy(
+                            isLocatingCurrent = false,
+                            latitudeInput = CoordinateConverter.formatCoordinate(place.bd09Point.latitude),
+                            longitudeInput = CoordinateConverter.formatCoordinate(place.bd09Point.longitude),
+                            addressInput = nextAddr,
+                            mapExternalJumpPlace = if (jumpInMap) place else current.mapExternalJumpPlace,
+                            inputHintMessage = if (jumpInMap) current.inputHintMessage else "已填入当前设备定位坐标",
+                        )
+                    }
+                }
+
+                is AppResult.Failure -> mutableUiState.update {
+                    it.copy(
+                        isLocatingCurrent = false,
+                        inputHintMessage = res.error.message,
+                    )
+                }
+            }
+        }
+    }
+
+    fun updateMapSearchQuery(query: String) {
+        mutableUiState.update {
+            it.copy(
+                mapSearchQuery = query,
+                mapSearchResults = if (query.isBlank()) emptyList() else it.mapSearchResults,
+            )
+        }
+    }
+
+    fun searchMapPlaces(query: String) {
+        val keyword = query.trim()
+        if (keyword.isEmpty()) {
+            mutableUiState.update { it.copy(mapSearchResults = emptyList(), isSearchingMapPlaces = false) }
+            return
+        }
+        mapSearchJob?.cancel()
+        mapSearchJob = viewModelScope.launch {
+            mutableUiState.update { it.copy(isSearchingMapPlaces = true) }
+            when (val res = locationService.searchPlaces(keyword)) {
+                is AppResult.Success -> mutableUiState.update { current ->
+                    val places = res.data
+                    val autoJump = if (places.size == 1) places.first() else current.mapExternalJumpPlace
+                    current.copy(
+                        isSearchingMapPlaces = false,
+                        mapSearchResults = places,
+                        mapExternalJumpPlace = autoJump,
+                    )
+                }
+
+                is AppResult.Failure -> mutableUiState.update {
+                    it.copy(isSearchingMapPlaces = false, mapSearchResults = emptyList())
+                }
+            }
+        }
+    }
+
+    fun reverseGeocodeMapCenter(gcjLatitude: Double, gcjLongitude: Double) {
+        reverseGeocodeJob?.cancel()
+        reverseGeocodeJob = viewModelScope.launch {
+            val address = locationService.reverseGeocodeGcj02(gcjLatitude, gcjLongitude)
+            if (!address.isNullOrBlank()) {
+                mutableUiState.update { it.copy(mapReverseGeocodedAddress = address) }
+            }
         }
     }
 

@@ -31,6 +31,8 @@ data class StuSignSubmitParams(
     val signCode: String? = null,
     val objectId: String? = null,
     val validate: String? = null,
+    val deviceCode: String? = null,
+    val clientUserAgent: String? = null,
 )
 
 /**
@@ -330,10 +332,13 @@ class ChaoxingRemoteDataSource @Inject constructor(
             params.signCode?.let { urlBuilder.addQueryParameter("signCode", it) }
             params.objectId?.let { urlBuilder.addQueryParameter("objectId", it) }
             params.validate?.let { urlBuilder.addQueryParameter("validate", it) }
+            params.deviceCode?.takeIf { it.isNotBlank() }?.let { urlBuilder.addQueryParameter("deviceCode", it) }
 
+            val userAgent = params.clientUserAgent?.takeIf { it.isNotBlank() }
+                ?: ChaoxingEndpointConfig.MOBILE_WEB_USER_AGENT
             val request = Request.Builder()
                 .url(urlBuilder.build())
-                .header(ChaoxingHttpExecutor.HEADER_USER_AGENT, ChaoxingEndpointConfig.MOBILE_WEB_USER_AGENT)
+                .header(ChaoxingHttpExecutor.HEADER_USER_AGENT, userAgent)
                 .tag(AccountContext::class.java, AccountContext(accountId))
                 .get()
                 .build()
@@ -348,6 +353,27 @@ class ChaoxingRemoteDataSource @Inject constructor(
             AppResult.Success(ChaoxingSignResponseParser.parse(response.body))
         }
     }
+
+    /** 只读查询已签活动在服务端记录的真实设备码与客户端 UA，用于同步统一设备码。 */
+    suspend fun fetchSignRecordDeviceInfo(accountId: String, activeId: Long): Pair<String, String?>? =
+        withContext(dispatchers.io) {
+            val url = endpointConfig.signInV2Url.toHttpUrl().newBuilder()
+                .addQueryParameter("activeId", activeId.toString())
+                .build()
+            val request = Request.Builder()
+                .url(url)
+                .header(ChaoxingHttpExecutor.HEADER_USER_AGENT, ChaoxingEndpointConfig.MOBILE_WEB_USER_AGENT)
+                .tag(AccountContext::class.java, AccountContext(accountId))
+                .get()
+                .build()
+            val response = (executor.executeText(request) as? AppResult.Success)?.data ?: return@withContext null
+            if (executor.isSessionExpiredRedirect(response)) {
+                return@withContext null
+            }
+            val dto = executor.decodeJson<SignInRecordResponseDto>(response.body)
+            val deviceCode = dto?.data?.deviceCode?.trim()?.takeIf { it.isNotEmpty() } ?: return@withContext null
+            deviceCode to dto.data.useragent
+        }
 
     /** 解析课堂签到二维码内容；若为跳转短链且缺 `enc` 则追踪一次重定向提取 `rcode`。 */
     suspend fun resolveQrPayload(accountId: String, rawQrContent: String): AppResult<ChaoxingQrPayload> {
