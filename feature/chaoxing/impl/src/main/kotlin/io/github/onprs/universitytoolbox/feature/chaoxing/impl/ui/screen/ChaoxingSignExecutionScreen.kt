@@ -51,6 +51,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -105,6 +106,8 @@ fun ChaoxingSignExecutionScreen(
             result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (granted) {
             viewModel.useCurrentDeviceLocation(jumpInMap = pendingJumpInMap)
+        } else {
+            viewModel.notifyMapPermissionDenied()
         }
     }
     val requestDeviceLocation: (Boolean) -> Unit = { jumpInMap ->
@@ -121,27 +124,20 @@ fun ChaoxingSignExecutionScreen(
         }
     }
 
+    val loadedDetail = state.detail
+    LaunchedEffect(loadedDetail?.activeId) {
+        if (shouldAutoPrefillDeviceLocation(loadedDetail, state.latitudeInput, context)) {
+            viewModel.useCurrentDeviceLocation(jumpInMap = false)
+        }
+    }
+
     SignExecutionSheetsHost(
         state = state,
         viewModel = viewModel,
         onRequestDeviceLocationInMap = { requestDeviceLocation(true) },
     )
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(text = stringResource(R.string.chaoxing_sign_execution_title)) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                            contentDescription = stringResource(R.string.chaoxing_back),
-                        )
-                    }
-                },
-            )
-        },
-    ) { innerPadding ->
+    Scaffold(topBar = { SignExecutionTopBar(onBack = onBack) }) { innerPadding ->
         val containerModifier = Modifier
             .fillMaxSize()
             .padding(innerPadding)
@@ -165,6 +161,32 @@ fun ChaoxingSignExecutionScreen(
             )
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SignExecutionTopBar(onBack: () -> Unit) {
+    TopAppBar(
+        title = { Text(text = stringResource(R.string.chaoxing_sign_execution_title)) },
+        navigationIcon = {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = stringResource(R.string.chaoxing_back),
+                )
+            }
+        },
+    )
+}
+
+private fun shouldAutoPrefillDeviceLocation(
+    detail: ChaoxingActiveDetail?,
+    latitudeInput: String,
+    context: Context,
+): Boolean {
+    if (detail == null || detail.hasTargetCoordinates || latitudeInput.isNotBlank()) return false
+    val isLocationSign = detail.signType == ChaoxingSignType.LOCATION || detail.requiresLocation
+    return isLocationSign && hasAnyLocationPermission(context)
 }
 
 private fun hasAnyLocationPermission(context: Context): Boolean =
@@ -240,18 +262,23 @@ private fun SignExecutionMapPickerLauncher(
     } else {
         null
     }
+    val fallbackPoint = viewModel.cachedDeviceLocationPoint
+        ?: state.presetLocations.firstOrNull()?.let { GeoPoint(it.latitude, it.longitude) }
     ChaoxingMapPickerDialog(
         initialBd09Point = initialPoint,
         targetBd09Point = targetPoint,
+        fallbackBd09Point = fallbackPoint,
         targetRangeMeters = detail?.locationRangeMeters,
         requiredLocationHint = detail?.locationText,
         initialAddress = state.addressInput,
         searchQuery = state.mapSearchQuery,
         isSearching = state.isSearchingMapPlaces,
+        hasCompletedSearch = state.hasCompletedMapSearch,
         searchResults = state.mapSearchResults,
         isLocatingCurrent = state.isLocatingCurrent,
-        externalJumpPlace = state.mapExternalJumpPlace,
+        jumpCommand = state.mapJumpCommand,
         reverseGeocodedAddress = state.mapReverseGeocodedAddress,
+        statusMessage = state.mapStatusMessage,
         onSearchQueryChange = viewModel::updateMapSearchQuery,
         onExecuteSearch = viewModel::searchMapPlaces,
         onRequestCurrentLocation = onRequestDeviceLocationInMap,

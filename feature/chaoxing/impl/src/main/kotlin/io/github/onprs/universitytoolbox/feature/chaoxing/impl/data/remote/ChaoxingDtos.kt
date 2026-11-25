@@ -84,24 +84,7 @@ data class UserLogin4UnameMsgDto(
     val studentcode: String? = null,
     val schoolname: String? = null,
     val pic: String? = null,
-    @Serializable(with = FlexibleStringSerializer::class)
-    val roleid: String? = null,
     val status: Int = 0,
-)
-
-@Serializable
-data class AccountMessageResponseDto(val status: Boolean = false, val message: AccountMessageDto? = null)
-
-@Serializable
-data class AccountMessageDto(
-    val uid: Long = 0L,
-    val fid: Int = 0,
-    val realname: String? = null,
-    val phone: String? = null,
-    val email: String? = null,
-    val studentCode: String? = null,
-    val trustuname: String? = null,
-    val trustunitname: String? = null,
 )
 
 @Serializable
@@ -133,8 +116,6 @@ data class ChannelContentDto(
     val isFiled: Int = 0,
     val isstart: Boolean = true,
     val studentcount: Int = 0,
-    val beginDate: String? = null,
-    val endDate: String? = null,
     val course: CourseWrapperDto? = null,
 )
 
@@ -147,10 +128,6 @@ data class CourseItemDto(
     val name: String? = null,
     val teacherfactor: String? = null,
     val imageurl: String? = null,
-    @Serializable(with = FlexibleStringSerializer::class)
-    val belongSchoolId: String? = null,
-    val schools: String? = null,
-    val coursestate: Int = 0,
 )
 
 @Serializable
@@ -164,6 +141,10 @@ data class ActiveListResponseDto(
 @Serializable
 data class ActiveListDataDto(val activeList: List<ActiveItemDto> = emptyList())
 
+/**
+ * 注意：实测 `/v2/apis/active/student/activelist` 返回的 `userStatus` 恒为 1（服务端未联表查询个人考勤记录），
+ * 真实个人考勤状态必须通过 `/v2/apis/sign/getAttendInfo`（[AttendInfoResponseDto]）获取。
+ */
 @Serializable
 data class ActiveItemDto(
     val id: Long = 0L,
@@ -172,15 +153,12 @@ data class ActiveItemDto(
     @Serializable(with = FlexibleStringSerializer::class)
     val otherId: String? = null,
     val status: Int = 0,
-    val userStatus: Int = 0,
     val nameOne: String? = null,
-    val nameTwo: String? = null,
     val nameFour: String? = null,
     val startTime: Long = 0L,
     val endTime: Long? = null,
     val releaseNum: Int = 0,
     val attendNum: Int = 0,
-    val logo: String? = null,
 )
 
 @Serializable
@@ -209,10 +187,8 @@ data class PptActiveInfoDto(
     val openPreventCheatFlag: Int = 0,
     val openCheckFaceFlag: Int = 0,
     val openCheckWeChatFlag: Int = 0,
-    val openSignOutFlag: Int = 0,
     val signInId: Long? = null,
     val signOutDuration: Long? = null,
-    val signOutAbsoluteTime: Long? = null,
     val signCode: String? = null,
     val locationText: String? = null,
     @Serializable(with = FlexibleStringSerializer::class)
@@ -234,10 +210,6 @@ data class PptActiveInfoDto(
     val starttime: Long = 0L,
     val endtime: Long? = null,
     val nowTime: Long? = null,
-    val starttimeStr: String? = null,
-    val endtimeStr: String? = null,
-    val timeLong: Long? = null,
-    val lateMinute: Int? = null,
     val releaseNum: Int = 0,
     val attendNum: Int = 0,
 )
@@ -269,11 +241,7 @@ data class PanUploadResponseDto(
 data class PanUploadDataDto(val objectId: String? = null, val audit: Int? = null)
 
 @Serializable
-data class SearchUnisResponseDto(
-    val result: Boolean = false,
-    val fromNums: Int = 0,
-    val froms: List<UniversityItemDto> = emptyList(),
-)
+data class SearchUnisResponseDto(val result: Boolean = false, val froms: List<UniversityItemDto> = emptyList())
 
 @Serializable
 data class UniversityItemDto(
@@ -295,8 +263,22 @@ data class QrAuthStatusResponseDto(
     val uid: String? = null,
 )
 
+/**
+ * `/v2/apis/sign/getAttendInfo` 学生个人单次签到真实考勤详情响应。
+ */
 @Serializable
-data class SignInRecordResponseDto(val result: Int = 0, val data: SignInRecordDataDto? = null)
+data class AttendInfoResponseDto(
+    val result: Int = 0,
+    val msg: String? = null,
+    val errorMsg: String? = null,
+    val data: AttendInfoDataDto? = null,
+)
 
 @Serializable
-data class SignInRecordDataDto(val deviceCode: String? = null, val useragent: String? = null)
+data class AttendInfoDataDto(
+    val id: Long? = null,
+    val activeId: Long = 0L,
+    val status: Int = 0,
+    val deviceCode: String? = null,
+    val useragent: String? = null,
+)

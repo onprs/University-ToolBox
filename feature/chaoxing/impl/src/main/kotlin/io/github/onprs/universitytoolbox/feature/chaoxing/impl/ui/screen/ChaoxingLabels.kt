@@ -53,6 +53,19 @@ internal fun SignExecutionResult.displayStatusText(): String = when (this) {
     is SignExecutionResult.Failed -> "执行失败：${error.message}"
 }
 
+internal fun formatRecordOutcomeLabel(outcome: String): String = when (outcome) {
+    "SUCCESS" -> "签到成功"
+    "ALREADY_SIGNED" -> "已签到"
+    "CAPTCHA_SUSPENDED" -> "待行为验证"
+    "MISSING_INPUT" -> "缺少参数"
+    "SESSION_EXPIRED" -> "会话过期"
+    "QUOTA_RESTRICTED" -> "配额受限"
+    "DUPLICATE_DEVICE" -> "设备冲突"
+    "REJECTED" -> "未通过"
+    "FAILED" -> "执行失败"
+    else -> "已处理"
+}
+
 internal fun formatTimestamp(epochMs: Long): String {
     if (epochMs <= 0L) {
         return "--"

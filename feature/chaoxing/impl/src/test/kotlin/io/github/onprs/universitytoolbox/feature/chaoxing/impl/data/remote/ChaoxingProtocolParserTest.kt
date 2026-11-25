@@ -151,7 +151,7 @@ class ChaoxingProtocolParserTest {
     }
 
     @Test
-    fun `decodes activelist json payload and profile safely`() {
+    fun `decodes activelist without trusting constant userStatus and maps getAttendInfo accurately`() {
         val activeJson = """
             {
               "result": 1,
@@ -162,8 +162,8 @@ class ChaoxingProtocolParserTest {
                     "activeType": 2,
                     "type": 2,
                     "otherId": "4",
-                    "status": 1,
-                    "userStatus": 0,
+                    "status": 2,
+                    "userStatus": 1,
                     "nameOne": "第3周课堂位置签到",
                     "nameFour": "11-25 08:00",
                     "startTime": 1700000000000,
@@ -192,11 +192,35 @@ class ChaoxingProtocolParserTest {
             ChaoxingDomainMapper.toActivity(it, courseId = 200000001L, clazzId = 100000001L)
         }
         assertEquals(ChaoxingSignType.LOCATION, activities[0].signType)
-        assertEquals(ChaoxingActivityStatus.IN_PROGRESS, activities[0].activityStatus)
-        assertEquals(ChaoxingUserSignStatus.UNSIGNED, activities[0].userStatus)
+        assertEquals(ChaoxingActivityStatus.ENDED, activities[0].activityStatus)
+        // activelist 返回的 userStatus=1 不得误判为已签，须等待 getAttendInfo 回填
+        assertEquals(ChaoxingUserSignStatus.UNKNOWN, activities[0].userStatus)
         assertEquals(ChaoxingSignType.SIGN_OUT, activities[1].signType)
         assertTrue(activities[1].isSignOut)
-        assertEquals(ChaoxingUserSignStatus.SIGNED, activities[1].userStatus)
+        assertEquals(ChaoxingUserSignStatus.UNKNOWN, activities[1].userStatus)
+
+        val unsignedAttend = ChaoxingJson.codec.decodeFromString<AttendInfoResponseDto>(
+            """{"result":1,"msg":"success","data":{"id":null,"activeId":7000000000001,"status":0}}""",
+        )
+        val absentAttend = ChaoxingJson.codec.decodeFromString<AttendInfoResponseDto>(
+            """{"result":1,"msg":"success","data":{"id":801,"activeId":7000000000002,"status":5}}""",
+        )
+        val signedAttend = ChaoxingJson.codec.decodeFromString<AttendInfoResponseDto>(
+            """
+            {"result":1,"msg":"success","data":{"id":802,"activeId":7000000000003,"status":1,"deviceCode":"DC_1"}}
+            """.trimIndent(),
+        )
+        assertEquals(
+            ChaoxingUserSignStatus.UNSIGNED,
+            ChaoxingDomainMapper.toAttendRecord(unsignedAttend.data!!, 7000000000001L).userStatus,
+        )
+        assertEquals(
+            ChaoxingUserSignStatus.ABSENT,
+            ChaoxingDomainMapper.toAttendRecord(absentAttend.data!!, 7000000000002L).userStatus,
+        )
+        val signedRecord = ChaoxingDomainMapper.toAttendRecord(signedAttend.data!!, 7000000000003L)
+        assertEquals(ChaoxingUserSignStatus.SIGNED, signedRecord.userStatus)
+        assertEquals("DC_1", signedRecord.deviceCode)
 
         val profileDto = UserLogin4UnameMsgDto(
             uid = 123456L,

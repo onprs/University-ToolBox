@@ -83,10 +83,13 @@ private class PendingLoginContext(
     val provisionalId: String,
     val accountInput: String,
     val plainPassword: String?,
+    val loginFid: String = ChaoxingEndpointConfig.DEFAULT_FID,
     val loginUniqueId: String,
     val loginDeviceModel: String,
     val sharedPayload: ChaoxingSharedAccountPayload? = null,
 )
+
+private data class StoredLoginCredentials(val rawLogin: String, val plainPassword: String, val loginFid: String)
 
 /**
  * 多账号签到协调器调用的账号会话修复与设备码维护桥接契约。
@@ -183,11 +186,12 @@ class ChaoxingAccountManager @Inject constructor(
         val loginUniqueId = ChaoxingDeviceIdentityHelper.generateUniqueId()
         val loginModel = ChaoxingDeviceIdentityHelper.randomMainstreamDeviceModel()
         val customUa = ChaoxingDeviceIdentityHelper.buildClientUserAgent(loginModel, loginUniqueId)
+        val normalizedFid = fid.trim().ifBlank { ChaoxingEndpointConfig.DEFAULT_FID }
         val loginRes = authRemoteDataSource.loginWithPassword(
             provisionalAccountId = provisionalId,
             accountInput = accountInput,
             plainPassword = plainPassword,
-            fid = fid,
+            fid = normalizedFid,
             validate = validate,
             customUserAgent = customUa,
         )
@@ -204,6 +208,7 @@ class ChaoxingAccountManager @Inject constructor(
                     provisionalId = provisionalId,
                     accountInput = accountInput,
                     plainPassword = plainPassword,
+                    loginFid = normalizedFid,
                     loginUniqueId = loginUniqueId,
                     loginDeviceModel = loginModel,
                 ),
@@ -225,11 +230,12 @@ class ChaoxingAccountManager @Inject constructor(
         val customUa = ChaoxingDeviceIdentityHelper.buildClientUserAgent(loginModel, loginUniqueId)
         val decryptedPlainPwd = runCatching { ChaoxingLoginCipher.decrypt(payload.encryptedPassword) }.getOrNull()
 
+        val normalizedFid = payload.fid.trim().ifBlank { ChaoxingEndpointConfig.DEFAULT_FID }
         val loginRes = authRemoteDataSource.loginWithPassword(
             provisionalAccountId = provisionalId,
             accountInput = payload.accountInput,
             plainPassword = payload.encryptedPassword,
-            fid = payload.fid,
+            fid = normalizedFid,
             validate = validate,
             isPasswordEncrypted = true,
             customUserAgent = customUa,
@@ -247,6 +253,7 @@ class ChaoxingAccountManager @Inject constructor(
                     provisionalId = provisionalId,
                     accountInput = payload.accountInput,
                     plainPassword = decryptedPlainPwd,
+                    loginFid = normalizedFid,
                     loginUniqueId = loginUniqueId,
                     loginDeviceModel = loginModel,
                     sharedPayload = payload,
@@ -259,16 +266,16 @@ class ChaoxingAccountManager @Inject constructor(
     suspend fun createShareBundle(accountId: String): AppResult<ChaoxingAccountShareBundle> {
         val account = accountDao.getById(accountId)
             ?: return AppResult.Failure(DomainError.NotFound("账号不存在"))
-        val (rawLogin, plainPassword) = decryptStoredCredentials(account)
+        val creds = decryptStoredCredentials(account)
             ?: return AppResult.Failure(
                 DomainError.Validation("该账号未保存登录密码，请使用账号密码重新登录一次后再分享绑定"),
             )
         val readyAccount = ensureAccountDeviceIdentity(account)
         val payload = ChaoxingSharedAccountPayload(
-            accountInput = rawLogin,
-            encryptedPassword = ChaoxingLoginCipher.encrypt(plainPassword),
+            accountInput = creds.rawLogin,
+            encryptedPassword = ChaoxingLoginCipher.encrypt(creds.plainPassword),
             displayName = readyAccount.displayName,
-            fid = readyAccount.fid,
+            fid = creds.loginFid,
             deviceCode = readyAccount.deviceCode,
             uniqueId = readyAccount.clientUniqueId,
             deviceModel = readyAccount.deviceModel,
@@ -290,24 +297,38 @@ class ChaoxingAccountManager @Inject constructor(
     /** 当账号存有加密凭据时，使用专属客户端指纹自动重登续期 Cookie 分区。 */
     override suspend fun repairSessionIfPossible(accountId: String): Boolean {
         val account = accountDao.getById(accountId) ?: return false
-        val (rawLogin, plainPassword) = decryptStoredCredentials(account) ?: return false
+        val creds = decryptStoredCredentials(account) ?: return false
         val ready = ensureAccountDeviceIdentity(account)
-        val provisionalId = "repair_${UUID.randomUUID()}"
         val customUa = ChaoxingDeviceIdentityHelper.buildClientUserAgent(ready.deviceModel, ready.clientUniqueId)
-        val loginRes = authRemoteDataSource.loginWithPassword(
-            provisionalAccountId = provisionalId,
-            accountInput = rawLogin,
-            plainPassword = plainPassword,
-            fid = ready.fid,
-            customUserAgent = customUa,
-        )
-        val isSuccess = loginRes is AppResult.Success && loginRes.data is ChaoxingLoginOutcome.Authenticated
-        if (isSuccess) {
-            accountDao.updateSessionStatus(accountId, SESSION_ACTIVE, timeProvider.currentTimeMillis())
-        } else {
-            cookieVault.clearAccount(provisionalId)
+
+        suspend fun attemptLogin(targetFid: String): Boolean {
+            val provisionalId = "repair_${UUID.randomUUID()}"
+            val loginRes = authRemoteDataSource.loginWithPassword(
+                provisionalAccountId = provisionalId,
+                accountInput = creds.rawLogin,
+                plainPassword = creds.plainPassword,
+                fid = targetFid,
+                customUserAgent = customUa,
+            )
+            val ok = loginRes is AppResult.Success && loginRes.data is ChaoxingLoginOutcome.Authenticated
+            if (!ok) {
+                cookieVault.clearAccount(provisionalId)
+            }
+            return ok
         }
-        return isSuccess
+
+        val recovered = attemptLogin(creds.loginFid) ||
+            (
+                creds.loginFid == ChaoxingEndpointConfig.DEFAULT_FID &&
+                    ready.fid.isNotBlank() &&
+                    ready.fid != ChaoxingEndpointConfig.DEFAULT_FID &&
+                    ready.fid != "0" &&
+                    attemptLogin(ready.fid)
+                )
+        if (recovered) {
+            accountDao.updateSessionStatus(accountId, SESSION_ACTIVE, timeProvider.currentTimeMillis())
+        }
+        return recovered
     }
 
     /** 确保账号拥有非空设备码与客户端会话指纹（兼容旧库记录平滑补齐）。 */
@@ -532,8 +553,9 @@ class ChaoxingAccountManager @Inject constructor(
             existing?.encryptedPasswordCiphertext
         }
         val trimmedInput = context.accountInput.trim()
-        val encryptedLoginInput = if (trimmedInput.isNotEmpty()) {
-            credentialCipher.encrypt(trimmedInput, associatedData = loginAssociatedData(accountId))
+        val encodedLoginInput = encodeStoredLoginInput(context.loginFid, trimmedInput)
+        val encryptedLoginInput = if (encodedLoginInput.isNotEmpty()) {
+            credentialCipher.encrypt(encodedLoginInput, associatedData = loginAssociatedData(accountId))
         } else {
             existing?.encryptedAccountInputCiphertext
         }
@@ -587,6 +609,16 @@ class ChaoxingAccountManager @Inject constructor(
             isFirstAccount = isFirstAccount,
             updatedDeviceBindingOnly = updatedDeviceOnly,
         )
+    }
+
+    private fun encodeStoredLoginInput(loginFid: String, trimmedInput: String): String {
+        if (trimmedInput.isEmpty()) return ""
+        val normalizedLoginFid = loginFid.trim().ifBlank { ChaoxingEndpointConfig.DEFAULT_FID }
+        return if (normalizedLoginFid != ChaoxingEndpointConfig.DEFAULT_FID) {
+            "$normalizedLoginFid\n$trimmedInput"
+        } else {
+            trimmedInput
+        }
     }
 
     private suspend fun resolveDeviceIdentity(
@@ -651,7 +683,9 @@ class ChaoxingAccountManager @Inject constructor(
                 ) as? AppResult.Success
                 )?.data.orEmpty()
             val signed = activities.firstOrNull {
-                it.userStatus == ChaoxingUserSignStatus.SIGNED || it.userStatus == ChaoxingUserSignStatus.LATE
+                it.userStatus == ChaoxingUserSignStatus.SIGNED ||
+                    it.userStatus == ChaoxingUserSignStatus.LATE ||
+                    it.userStatus == ChaoxingUserSignStatus.TEACHER_SIGNED
             }
             val record = signed?.let { remoteDataSource.fetchSignRecordDeviceInfo(entity.accountId, it.activeId) }
             if (record != null) {
@@ -676,16 +710,28 @@ class ChaoxingAccountManager @Inject constructor(
         return entity
     }
 
-    private suspend fun decryptStoredCredentials(account: ChaoxingAccountEntity): Pair<String, String>? {
+    private suspend fun decryptStoredCredentials(account: ChaoxingAccountEntity): StoredLoginCredentials? {
         val loginCipher = account.encryptedAccountInputCiphertext?.takeIf { it.isNotBlank() } ?: return null
         val pwdCipher = account.encryptedPasswordCiphertext?.takeIf { it.isNotBlank() } ?: return null
-        val rawLogin = runCatching {
-            credentialCipher.decrypt(loginCipher, associatedData = loginAssociatedData(account.accountId))
+        val decodedLogin = runCatching {
+            credentialCipher.decrypt(loginCipher, associatedData = loginAssociatedData(accountId = account.accountId))
         }.getOrNull()?.takeIf { it.isNotBlank() } ?: return null
         val plainPwd = runCatching {
             credentialCipher.decrypt(pwdCipher, associatedData = account.accountId)
         }.getOrNull()?.takeIf { it.isNotEmpty() } ?: return null
-        return rawLogin to plainPwd
+
+        val newlineIndex = decodedLogin.indexOf('\n')
+        val (loginFid, rawLogin) = if (newlineIndex > 0) {
+            val fidPart = decodedLogin.substring(0, newlineIndex).trim().ifBlank { ChaoxingEndpointConfig.DEFAULT_FID }
+            val loginPart = decodedLogin.substring(newlineIndex + 1).trim()
+            fidPart to loginPart
+        } else {
+            ChaoxingEndpointConfig.DEFAULT_FID to decodedLogin.trim()
+        }
+        if (rawLogin.isEmpty()) {
+            return null
+        }
+        return StoredLoginCredentials(rawLogin = rawLogin, plainPassword = plainPwd, loginFid = loginFid)
     }
 
     private fun loginAssociatedData(accountId: String): String = "${accountId}_login"
@@ -693,7 +739,6 @@ class ChaoxingAccountManager @Inject constructor(
     companion object {
         const val SESSION_ACTIVE = "ACTIVE"
         const val SESSION_EXPIRED = "EXPIRED"
-        const val SESSION_CAPTCHA_REQUIRED = "CAPTCHA_REQUIRED"
         private const val MAX_PROBE_COURSES = 2
     }
 }

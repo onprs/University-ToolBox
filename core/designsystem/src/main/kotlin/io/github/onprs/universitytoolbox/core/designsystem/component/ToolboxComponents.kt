@@ -6,18 +6,14 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -37,7 +33,6 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxElevation
 import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxRadius
 import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxSizes
 import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxSpacing
@@ -192,39 +187,6 @@ fun ToolboxLoadingIndicator(
         strokeWidth = strokeWidth,
         strokeCap = StrokeCap.Round,
     )
-}
-
-/**
- * 悬浮工具栏容器封装：提供高对比度胶囊浮层用于承载高频快捷操作。
- */
-@Composable
-fun ToolboxFloatingToolbar(
-    modifier: Modifier = Modifier,
-    contentPadding: PaddingValues = PaddingValues(
-        horizontal = ToolboxSpacing.medium,
-        vertical = ToolboxSpacing.small,
-    ),
-    content: @Composable RowScope.() -> Unit,
-) {
-    Surface(
-        modifier = modifier,
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        tonalElevation = ToolboxElevation.level2,
-        shadowElevation = ToolboxElevation.level3,
-        border = BorderStroke(
-            width = 1.dp,
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
-        ),
-    ) {
-        Row(
-            modifier = Modifier.padding(contentPadding),
-            horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
-            verticalAlignment = Alignment.CenterVertically,
-            content = content,
-        )
-    }
 }
 
 /**

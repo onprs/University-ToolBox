@@ -1,6 +1,5 @@
 package io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote
 
-import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 import javax.crypto.Cipher
@@ -33,11 +32,5 @@ object ChaoxingLoginCipher {
         cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec)
         val decoded = Base64.getDecoder().decode(cipherTextBase64)
         return String(cipher.doFinal(decoded), StandardCharsets.UTF_8)
-    }
-
-    /** 对短信验证码执行 AES 加密并附加 URL 编码（对应官方 login.js 的 verCode 编码流程）。 */
-    fun encryptSmsCode(verCode: String): String {
-        val encrypted = encrypt(verCode)
-        return URLEncoder.encode(encrypted, StandardCharsets.UTF_8)
     }
 }

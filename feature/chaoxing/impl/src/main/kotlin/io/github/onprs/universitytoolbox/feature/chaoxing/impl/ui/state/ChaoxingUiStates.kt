@@ -20,6 +20,11 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.R
  */
 class ImageBytesHolder(val bytes: ByteArray, val fileName: String = "image.jpg")
 
+/**
+ * 驱动地图选点弹窗强制跳转回正的单调序号指令（避免重复点击相同坐标时被状态判等吞掉）。
+ */
+data class MapJumpCommand(val sequence: Long, val place: ResolvedPlace)
+
 data class ChaoxingDashboardUiState(
     val licenseState: LicenseState = LicenseState.Initializing,
     val accessDecision: AccessDecision = AccessDecision.Denied(AccessDenialReason.EngineInitializing),
@@ -133,9 +138,11 @@ data class ChaoxingSignExecutionUiState(
     val presetLocations: List<ChaoxingPresetLocationEntity> = emptyList(),
     val mapSearchQuery: String = "",
     val isSearchingMapPlaces: Boolean = false,
+    val hasCompletedMapSearch: Boolean = false,
     val mapSearchResults: List<ResolvedPlace> = emptyList(),
-    val mapExternalJumpPlace: ResolvedPlace? = null,
+    val mapJumpCommand: MapJumpCommand? = null,
     val mapReverseGeocodedAddress: String? = null,
+    val mapStatusMessage: String? = null,
     val isExecuting: Boolean = false,
     val batchSummary: BatchSignSummary? = null,
     val inputHintMessage: String? = null,

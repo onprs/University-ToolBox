@@ -119,10 +119,6 @@ class ChaoxingDashboardViewModel @Inject constructor(
         showArchived.value = show
     }
 
-    fun dismissError() {
-        errorMessage.value = null
-    }
-
     fun refreshCourses() {
         val accountId = uiState.value.selectedAccount?.accountId ?: return
         syncCoursesForAccount(accountId)

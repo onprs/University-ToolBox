@@ -33,8 +33,13 @@ sealed interface ChaoxingNavKey : NavKey {
 
     /** 单个签到活动的详情核查、策略参数录入与批量执行页面。 */
     @Serializable
-    data class SignExecution(val accountId: String, val courseId: Long, val clazzId: Long, val activeId: Long) :
-        ChaoxingNavKey
+    data class SignExecution(
+        val accountId: String,
+        val courseId: Long,
+        val clazzId: Long,
+        val activeId: Long,
+        val courseName: String = "",
+    ) : ChaoxingNavKey
 
     /** 本地签到审计记录与协议诊断页面。 */
     @Serializable

@@ -434,8 +434,8 @@
     - `1`：进行中
     - `2`：已结束
     - `0`：未开始（配合 `showNotStartedActive`）
-  - `userStatus`（学生个人参与/签到状态，来源：`pcpick/stu/index` 模板及 `util2.js`）：
-    - `0`：未签
+  - `userStatus`：在 `/v2/apis/active/student/activelist` 中服务端固定返回 `1`（在 `/widget/pcpick/stu/activeList` 中返回 `null`），查询学生个人真实考勤状态需调用只读端点 **`GET https://mobilelearn.chaoxing.com/v2/apis/sign/getAttendInfo?activeId=<ACTIVE_ID>`** 并读取 `data.status`（来源：`pcpick/stu/index` 模板及 `util2.js`）：
+    - `0`：未签（若活动 `status == 2` 已结束且 `data.id == null`，表示逾期未签）
     - `1`：已签
     - `2`：代签（教师代签）
     - `4`：请假

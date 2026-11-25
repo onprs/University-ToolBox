@@ -186,6 +186,17 @@ data class ChaoxingActiveDetail(
 }
 
 /**
+ * 单次签到活动的学生个人真实考勤记录摘要（由 `/v2/apis/sign/getAttendInfo` 产出）。
+ */
+data class ChaoxingAttendRecord(
+    val recordId: Long?,
+    val activeId: Long,
+    val userStatus: ChaoxingUserSignStatus,
+    val deviceCode: String? = null,
+    val userAgent: String? = null,
+)
+
+/**
  * 学校检索结果项。
  */
 data class ChaoxingSchoolOption(val schoolId: Long, val fid: String, val name: String)
@@ -490,7 +501,10 @@ object ChaoxingDomainMapper {
             )
         }
 
-    /** 将活动条目 DTO 映射为领域模型。 */
+    /**
+     * 将活动条目 DTO 映射为领域模型。
+     * `activelist` 响应不携带个人真实签到状态，初始标记为 [ChaoxingUserSignStatus.UNKNOWN]，由 `getAttendInfo` 回填。
+     */
     fun toActivity(dto: ActiveItemDto, courseId: Long, clazzId: Long): ChaoxingActivity {
         val otherIdStr = dto.otherId.orEmpty()
         val isSignOut = dto.activeType == ChaoxingActivity.ACTIVE_TYPE_SIGN_OUT
@@ -505,7 +519,7 @@ object ChaoxingDomainMapper {
             signType = signType,
             isSignOut = isSignOut,
             activityStatus = mapActivityStatus(dto.status),
-            userStatus = mapUserSignStatus(dto.userStatus),
+            userStatus = ChaoxingUserSignStatus.UNKNOWN,
             startTimeMs = dto.startTime,
             endTimeMs = dto.endTime,
             displayTime = dto.nameFour.orEmpty(),
@@ -513,6 +527,15 @@ object ChaoxingDomainMapper {
             attendNum = dto.attendNum,
         )
     }
+
+    /** 将 `getAttendInfo` 返回的个人考勤详情映射为领域记录。 */
+    fun toAttendRecord(dto: AttendInfoDataDto, fallbackActiveId: Long): ChaoxingAttendRecord = ChaoxingAttendRecord(
+        recordId = dto.id,
+        activeId = dto.activeId.takeIf { it > 0L } ?: fallbackActiveId,
+        userStatus = mapUserSignStatus(dto.status),
+        deviceCode = dto.deviceCode?.trim()?.takeIf { it.isNotEmpty() },
+        userAgent = dto.useragent?.trim()?.takeIf { it.isNotEmpty() },
+    )
 
     /** 将 `getPPTActiveInfo` 详情响应转换为签到策略执行上下文。 */
     fun toActiveDetail(dto: PptActiveInfoDto): ChaoxingActiveDetail {

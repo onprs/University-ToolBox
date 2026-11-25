@@ -27,8 +27,4 @@
     <string name="feature_home_detail_last_used">最近使用记录</string>
     <string name="feature_home_detail_disabled_default">该工具当前处于远程维护熔断状态，请稍后再试。</string>
     <string name="feature_home_detail_back">返回列表</string>
-    <string name="feature_home_tier_free">免费版</string>
-    <string name="feature_home_tier_standard">标准版</string>
-    <string name="feature_home_tier_pro">专业版</string>
-    <string name="feature_home_tier_full">完整版</string>
 </resources>

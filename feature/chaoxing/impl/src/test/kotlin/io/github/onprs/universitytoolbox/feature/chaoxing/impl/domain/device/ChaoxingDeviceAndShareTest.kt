@@ -3,9 +3,9 @@ package io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.device
 import android.graphics.BitmapFactory
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingLoginCipher
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -57,8 +57,7 @@ class ChaoxingDeviceAndShareTest {
         )
 
         val encodedUrl = ChaoxingSharedAccountCodec.encodeShareUrl(original)
-        assertTrue(ChaoxingSharedAccountCodec.isChaoxingBindDeepLink(encodedUrl))
-        assertFalse(ChaoxingSharedAccountCodec.isChaoxingBindDeepLink("https://example.com/other"))
+        assertNull(ChaoxingSharedAccountCodec.parseShareText("https://example.com/other"))
 
         // 支持直接解析深链及从带前后说明文字的剪贴板消息中提取
         val wrappedClipboardText = "请点击导入代签绑定链接：$encodedUrl 谢谢"

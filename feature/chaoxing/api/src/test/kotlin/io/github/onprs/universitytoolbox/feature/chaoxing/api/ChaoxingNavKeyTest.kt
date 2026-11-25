@@ -34,6 +34,7 @@ class ChaoxingNavKeyTest {
                 courseId = 200000001L,
                 clazzId = 100000001L,
                 activeId = 7000000000001L,
+                courseName = "数据结构示例课程",
             ),
             ChaoxingNavKey.SignRecords(accountId = "acc-01"),
             ChaoxingNavKey.SignRecords(accountId = null),

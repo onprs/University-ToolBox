@@ -157,6 +157,7 @@ private fun ActivitiesBody(
                                     courseId = state.courseId,
                                     clazzId = state.clazzId,
                                     activeId = activity.activeId,
+                                    courseName = state.courseName,
                                 ),
                             )
                         }
@@ -287,20 +288,11 @@ private fun ActivityCard(activity: ChaoxingActivity, onClick: () -> Unit) {
                     contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
                 if (activity.isSignRelated) {
-                    val isSigned = activity.userStatus == ChaoxingUserSignStatus.SIGNED ||
-                        activity.userStatus == ChaoxingUserSignStatus.TEACHER_SIGNED
+                    val (badgeBg, badgeFg) = resolveSignStatusColors(activity.userStatus)
                     ToolboxStatusBadge(
                         text = activity.userStatus.displayLabel(),
-                        containerColor = if (isSigned) {
-                            ToolboxTheme.extendedColors.successContainer
-                        } else {
-                            ToolboxTheme.extendedColors.warningContainer
-                        },
-                        contentColor = if (isSigned) {
-                            ToolboxTheme.extendedColors.onSuccessContainer
-                        } else {
-                            ToolboxTheme.extendedColors.onWarningContainer
-                        },
+                        containerColor = badgeBg,
+                        contentColor = badgeFg,
                     )
                 }
             }
@@ -318,4 +310,31 @@ private fun ActivityCard(activity: ChaoxingActivity, onClick: () -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun resolveSignStatusColors(
+    status: ChaoxingUserSignStatus,
+): Pair<androidx.compose.ui.graphics.Color, androidx.compose.ui.graphics.Color> = when (status) {
+    ChaoxingUserSignStatus.SIGNED,
+    ChaoxingUserSignStatus.TEACHER_SIGNED,
+    -> ToolboxTheme.extendedColors.successContainer to ToolboxTheme.extendedColors.onSuccessContainer
+
+    ChaoxingUserSignStatus.ABSENT ->
+        MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.onErrorContainer
+
+    ChaoxingUserSignStatus.LEAVE,
+    ChaoxingUserSignStatus.SICK_LEAVE,
+    ChaoxingUserSignStatus.PERSONAL_LEAVE,
+    ChaoxingUserSignStatus.PUBLIC_LEAVE,
+    -> MaterialTheme.colorScheme.secondaryContainer to MaterialTheme.colorScheme.onSecondaryContainer
+
+    ChaoxingUserSignStatus.UNKNOWN ->
+        MaterialTheme.colorScheme.surfaceContainerHigh to MaterialTheme.colorScheme.onSurfaceVariant
+
+    ChaoxingUserSignStatus.UNSIGNED,
+    ChaoxingUserSignStatus.LATE,
+    ChaoxingUserSignStatus.EARLY_LEAVE,
+    ChaoxingUserSignStatus.EXPIRED,
+    -> ToolboxTheme.extendedColors.warningContainer to ToolboxTheme.extendedColors.onWarningContainer
 }

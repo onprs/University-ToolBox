@@ -26,17 +26,11 @@
     <string name="feature_unlock_reason_clock_rollback">检测到系统时间回拨异常，请校准设备时间或联网同步后重试。</string>
     <string name="feature_unlock_reason_revoked">该激活编号已失效，请更换新的授权密钥。</string>
     <string name="feature_unlock_reason_invalid_signature">授权校验未通过，请确认密钥输入完整且属于本设备。</string>
-    <string name="feature_unlock_detail_tier">授权等级</string>
-    <string name="feature_unlock_detail_serial">授权编号</string>
     <string name="feature_unlock_detail_quota">子账号配额</string>
     <string name="feature_unlock_detail_expiry">有效期至</string>
     <string name="feature_unlock_detail_permanent">永久有效</string>
     <string name="feature_unlock_detail_scopes">授权范围</string>
     <string name="feature_unlock_scope_all">全功能通用授权</string>
-    <string name="feature_unlock_tier_free">免费版</string>
-    <string name="feature_unlock_tier_standard">标准版</string>
-    <string name="feature_unlock_tier_pro">专业版</string>
-    <string name="feature_unlock_tier_full">完整版</string>
     <string name="feature_unlock_feedback_copied">设备特征码已复制</string>
     <string name="feature_unlock_feedback_activated">激活成功</string>
     <string name="feature_unlock_feedback_empty">请先输入激活密钥</string>

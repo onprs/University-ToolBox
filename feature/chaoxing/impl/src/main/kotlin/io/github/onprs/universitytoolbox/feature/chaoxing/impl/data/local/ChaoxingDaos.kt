@@ -109,9 +109,6 @@ interface ChaoxingPresetLocationDao {
     @Query("SELECT * FROM chaoxing_preset_locations ORDER BY createdAtMs DESC")
     fun observeAll(): Flow<List<ChaoxingPresetLocationEntity>>
 
-    @Query("SELECT * FROM chaoxing_preset_locations ORDER BY createdAtMs DESC")
-    suspend fun getAll(): List<ChaoxingPresetLocationEntity>
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(entity: ChaoxingPresetLocationEntity): Long
 

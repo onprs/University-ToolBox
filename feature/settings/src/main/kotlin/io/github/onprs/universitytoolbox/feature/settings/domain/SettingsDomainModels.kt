@@ -1,35 +1,6 @@
 package io.github.onprs.universitytoolbox.feature.settings.domain
 
 /**
- * 主题显示模式选项。
- */
-enum class ThemeModeOption {
-    SYSTEM,
-    LIGHT,
-    DARK,
-}
-
-/**
- * 应用内界面语言选项。
- */
-enum class LanguageOption(val localeTag: String) {
-    SYSTEM(""),
-    ZH_CN("zh-CN"),
-    EN("en"),
-    ;
-
-    companion object {
-        fun fromTag(tag: String): LanguageOption = entries.firstOrNull {
-            it.localeTag.equals(tag, ignoreCase = true)
-        } ?: when {
-            tag.startsWith("zh", ignoreCase = true) -> ZH_CN
-            tag.startsWith("en", ignoreCase = true) -> EN
-            else -> SYSTEM
-        }
-    }
-}
-
-/**
  * 关键运行时权限类型。
  */
 enum class PermissionKind {

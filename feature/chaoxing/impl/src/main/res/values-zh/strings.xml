@@ -4,7 +4,6 @@
     <string name="chaoxing_tool_description">多账号课程同步、签到活动监测与全类型签到辅助</string>
     <string name="chaoxing_dashboard_title">学习通课程与签到</string>
     <string name="chaoxing_accounts_title">学习通账号管理</string>
-    <string name="chaoxing_activities_title">课程活动监测</string>
     <string name="chaoxing_sign_execution_title">签到详情与执行</string>
     <string name="chaoxing_records_title">本地签到记录</string>
     <string name="chaoxing_add_account">绑定账号</string>

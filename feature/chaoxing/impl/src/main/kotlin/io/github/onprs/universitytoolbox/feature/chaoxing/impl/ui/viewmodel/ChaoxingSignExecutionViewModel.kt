@@ -27,7 +27,9 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.sign.SignE
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.sign.SignExecutionResult
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.ChaoxingSignExecutionUiState
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.ImageBytesHolder
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.MapJumpCommand
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -85,6 +87,10 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
 
     private var mapSearchJob: Job? = null
     private var reverseGeocodeJob: Job? = null
+    private var nextJumpSequence: Long = 0L
+
+    val cachedDeviceLocationPoint: GeoPoint?
+        get() = locationService.lastKnownPlace?.bd09Point
 
     init {
         observePresetLocations()
@@ -221,13 +227,28 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
     }
 
     fun setMapPickerOpen(open: Boolean) {
+        if (!open) {
+            mapSearchJob?.cancel()
+            reverseGeocodeJob?.cancel()
+        }
         mutableUiState.update {
             it.copy(
                 isMapPickerOpen = open,
                 mapSearchQuery = if (open) it.mapSearchQuery else "",
+                hasCompletedMapSearch = if (open) it.hasCompletedMapSearch else false,
                 mapSearchResults = if (open) it.mapSearchResults else emptyList(),
-                mapExternalJumpPlace = if (open) it.mapExternalJumpPlace else null,
+                mapJumpCommand = if (open) it.mapJumpCommand else null,
                 mapReverseGeocodedAddress = if (open) it.mapReverseGeocodedAddress else null,
+                mapStatusMessage = null,
+            )
+        }
+    }
+
+    fun notifyMapPermissionDenied() {
+        mutableUiState.update {
+            it.copy(
+                mapStatusMessage = "尚未授予定位权限，请在系统设置中授权位置信息或直接搜索地点",
+                inputHintMessage = "尚未授予定位权限",
             )
         }
     }
@@ -329,10 +350,21 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
             return
         }
         viewModelScope.launch {
-            mutableUiState.update { it.copy(isLocatingCurrent = true, inputHintMessage = null) }
+            mutableUiState.update {
+                it.copy(
+                    isLocatingCurrent = true,
+                    inputHintMessage = null,
+                    mapStatusMessage = null,
+                )
+            }
             when (val res = locationService.getCurrentLocation()) {
                 is AppResult.Success -> {
                     val place = res.data
+                    val jumpCmd = if (jumpInMap || uiState.value.isMapPickerOpen) {
+                        MapJumpCommand(sequence = ++nextJumpSequence, place = place)
+                    } else {
+                        null
+                    }
                     mutableUiState.update { current ->
                         val nextAddr = place.address.ifBlank {
                             current.addressInput.ifBlank { current.detail?.locationText.orEmpty() }
@@ -342,54 +374,99 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
                             latitudeInput = CoordinateConverter.formatCoordinate(place.bd09Point.latitude),
                             longitudeInput = CoordinateConverter.formatCoordinate(place.bd09Point.longitude),
                             addressInput = nextAddr,
-                            mapExternalJumpPlace = if (jumpInMap) place else current.mapExternalJumpPlace,
+                            mapJumpCommand = jumpCmd ?: current.mapJumpCommand,
+                            mapStatusMessage = null,
                             inputHintMessage = if (jumpInMap) current.inputHintMessage else "已填入当前设备定位坐标",
                         )
                     }
                 }
 
-                is AppResult.Failure -> mutableUiState.update {
-                    it.copy(
+                is AppResult.Failure -> mutableUiState.update { current ->
+                    val errMsg = res.error.message
+                    val showInMap = jumpInMap || current.isMapPickerOpen
+                    current.copy(
                         isLocatingCurrent = false,
-                        inputHintMessage = res.error.message,
+                        mapStatusMessage = if (showInMap) errMsg else current.mapStatusMessage,
+                        inputHintMessage = errMsg,
                     )
                 }
             }
         }
     }
 
-    fun updateMapSearchQuery(query: String) {
+    fun updateMapSearchQuery(query: String, proximityGcj: GeoPoint? = null) {
+        mapSearchJob?.cancel()
+        val trimmed = query.trim()
         mutableUiState.update {
             it.copy(
                 mapSearchQuery = query,
-                mapSearchResults = if (query.isBlank()) emptyList() else it.mapSearchResults,
+                hasCompletedMapSearch = false,
+                mapStatusMessage = null,
+                mapSearchResults = if (trimmed.isEmpty()) emptyList() else it.mapSearchResults,
+                isSearchingMapPlaces = false,
             )
+        }
+        if (trimmed.length >= MIN_AUTO_SEARCH_LEN) {
+            mapSearchJob = viewModelScope.launch {
+                delay(MAP_SEARCH_DEBOUNCE_MS)
+                performMapSearch(keyword = trimmed, proximityGcj = proximityGcj, autoJumpFirst = false)
+            }
         }
     }
 
-    fun searchMapPlaces(query: String) {
+    fun searchMapPlaces(query: String, proximityGcj: GeoPoint? = null, autoJumpFirst: Boolean = false) {
         val keyword = query.trim()
+        mapSearchJob?.cancel()
         if (keyword.isEmpty()) {
-            mutableUiState.update { it.copy(mapSearchResults = emptyList(), isSearchingMapPlaces = false) }
+            mutableUiState.update {
+                it.copy(
+                    mapSearchResults = emptyList(),
+                    isSearchingMapPlaces = false,
+                    hasCompletedMapSearch = false,
+                )
+            }
             return
         }
-        mapSearchJob?.cancel()
         mapSearchJob = viewModelScope.launch {
-            mutableUiState.update { it.copy(isSearchingMapPlaces = true) }
-            when (val res = locationService.searchPlaces(keyword)) {
-                is AppResult.Success -> mutableUiState.update { current ->
-                    val places = res.data
-                    val autoJump = if (places.size == 1) places.first() else current.mapExternalJumpPlace
+            performMapSearch(keyword = keyword, proximityGcj = proximityGcj, autoJumpFirst = autoJumpFirst)
+        }
+    }
+
+    private suspend fun performMapSearch(keyword: String, proximityGcj: GeoPoint?, autoJumpFirst: Boolean) {
+        mutableUiState.update {
+            it.copy(
+                isSearchingMapPlaces = true,
+                hasCompletedMapSearch = false,
+                mapStatusMessage = null,
+            )
+        }
+        when (val res = locationService.searchPlaces(keyword, proximityGcj)) {
+            is AppResult.Success -> {
+                val places = res.data
+                val shouldJump = (autoJumpFirst && places.isNotEmpty()) || places.size == 1
+                val jumpCmd = if (shouldJump && places.isNotEmpty()) {
+                    MapJumpCommand(sequence = ++nextJumpSequence, place = places.first())
+                } else {
+                    null
+                }
+                val visibleCandidates = if (places.size == 1 && shouldJump) emptyList() else places
+                mutableUiState.update { current ->
                     current.copy(
                         isSearchingMapPlaces = false,
-                        mapSearchResults = places,
-                        mapExternalJumpPlace = autoJump,
+                        hasCompletedMapSearch = true,
+                        mapSearchResults = visibleCandidates,
+                        mapJumpCommand = jumpCmd ?: current.mapJumpCommand,
                     )
                 }
+            }
 
-                is AppResult.Failure -> mutableUiState.update {
-                    it.copy(isSearchingMapPlaces = false, mapSearchResults = emptyList())
-                }
+            is AppResult.Failure -> mutableUiState.update {
+                it.copy(
+                    isSearchingMapPlaces = false,
+                    hasCompletedMapSearch = true,
+                    mapSearchResults = emptyList(),
+                    mapStatusMessage = res.error.message,
+                )
             }
         }
     }
@@ -414,8 +491,9 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
         mutableUiState.update { it.copy(captchaValidateInput = validate) }
     }
 
-    fun executeSign(courseName: String) {
+    fun executeSign(courseName: String = route.courseName) {
         val current = uiState.value
+        val resolvedCourseName = courseName.ifBlank { route.courseName }
         if (current.isExecuting || current.selectedAccountIds.isEmpty()) {
             return
         }
@@ -450,7 +528,7 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
             }
             val summary = signCoordinator.executeForAccounts(
                 targetAccountIds = orderedTargetIds,
-                courseName = courseName,
+                courseName = resolvedCourseName,
                 activityTitle = current.detail?.title ?: "课堂签到",
                 request = request,
                 prefetchedDetail = current.detail,
@@ -477,5 +555,10 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
     @AssistedFactory
     interface Factory {
         fun create(route: ChaoxingNavKey.SignExecution): ChaoxingSignExecutionViewModel
+    }
+
+    companion object {
+        private const val MIN_AUTO_SEARCH_LEN = 2
+        private const val MAP_SEARCH_DEBOUNCE_MS = 380L
     }
 }

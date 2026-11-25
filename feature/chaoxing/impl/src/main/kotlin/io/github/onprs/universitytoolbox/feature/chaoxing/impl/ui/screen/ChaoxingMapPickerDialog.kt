@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -50,8 +51,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableDoubleStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -60,263 +61,380 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil3.compose.AsyncImage
+import coil3.SingletonImageLoader
+import coil3.request.ImageRequest
+import coil3.request.SuccessResult
+import coil3.request.allowHardware
+import coil3.toBitmap
 import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxLinearProgressBar
 import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxRadius
 import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxSpacing
+import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxTheme
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.CoordinateConverter
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.GeoPoint
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.ResolvedPlace
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.MapJumpCommand
 import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+private const val FALLBACK_CHINA_CENTER_LAT = 35.86166
+private const val FALLBACK_CHINA_CENTER_LON = 104.195397
+private const val FALLBACK_OVERVIEW_ZOOM = 5.0
+private const val REVERSE_GEOCODE_DEBOUNCE_MS = 450L
+private const val TILE_CACHE_MAX_ENTRIES = 160
+private const val MAX_PARENT_FALLBACK_STEPS = 3
+
+private val STANDARD_MAP_BG_COLOR = Color(0xFFF3F1EC)
+private val SATELLITE_MAP_BG_COLOR = Color(0xFF18222B)
+
+/**
+ * 内存 LRU 瓦片位图缓存：支持跨缩放层级保留父瓦片以消除缩放闪烁与黑底撕裂。
+ */
+private class TileBitmapCache(private val maxEntries: Int = TILE_CACHE_MAX_ENTRIES) {
+    private val map = object : LinkedHashMap<String, ImageBitmap>(maxEntries, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ImageBitmap>?): Boolean =
+            size > maxEntries
+    }
+    private val inFlightUrls = HashSet<String>()
+    var revision by mutableIntStateOf(0)
+        private set
+
+    @Synchronized
+    fun get(url: String): ImageBitmap? = map[url]
+
+    @Synchronized
+    fun markInFlightIfNeeded(url: String): Boolean {
+        if (map.containsKey(url) || !inFlightUrls.add(url)) {
+            return false
+        }
+        return true
+    }
+
+    @Synchronized
+    fun completeLoad(url: String, bitmap: ImageBitmap?) {
+        inFlightUrls.remove(url)
+        if (bitmap != null) {
+            map[url] = bitmap
+            revision++
+        }
+    }
+}
+
+private class MapViewportHolder(initialCenterGcj: GeoPoint, initialConfirmed: Boolean, initialAddress: String) {
+    var centerGcj by mutableStateOf(initialCenterGcj)
+    var zoom by mutableDoubleStateOf(
+        if (initialConfirmed) SlippyMapProjection.DEFAULT_CAMPUS_ZOOM else FALLBACK_OVERVIEW_ZOOM,
+    )
+    var hasConfirmedLocation by mutableStateOf(initialConfirmed)
+    var satelliteMode by mutableStateOf(false)
+    var addressText by mutableStateOf(initialAddress)
+    var showSavePresetPrompt by mutableStateOf(false)
+
+    fun applyPlace(place: ResolvedPlace, fallbackTitle: Boolean = false) {
+        centerGcj = place.gcj02Point
+        zoom = SlippyMapProjection.DEFAULT_CAMPUS_ZOOM
+        hasConfirmedLocation = true
+        if (fallbackTitle) {
+            addressText = place.address.ifBlank { place.title }
+        } else if (place.address.isNotBlank()) {
+            addressText = place.address
+        }
+    }
+
+    fun updateCenterAndZoom(nextCenter: GeoPoint, nextZoom: Double) {
+        centerGcj = nextCenter
+        zoom = nextZoom
+        hasConfirmedLocation = true
+    }
+}
 
 /**
  * 全屏交互式地图手动选点对话框。
- * 底图采用 GCJ-02 中文高清瓦片，选点确认时自动转换为超星签到所需的 BD-09 百度坐标系。
+ * - 底图采用 GCJ-02 高密度中文瓦片 + 纯 Canvas 无约束拼接与父瓦片垫底渲染，消除缩放十字撕裂与模糊；
+ * - 全屏容器接入 `.imePadding()`，确保软键盘弹起时底部位置描述输入框完整可见。
  */
 @Composable
 internal fun ChaoxingMapPickerDialog(
     initialBd09Point: GeoPoint?,
     targetBd09Point: GeoPoint?,
+    fallbackBd09Point: GeoPoint?,
     targetRangeMeters: Int?,
     requiredLocationHint: String?,
     initialAddress: String,
     searchQuery: String,
     isSearching: Boolean,
+    hasCompletedSearch: Boolean,
     searchResults: List<ResolvedPlace>,
     isLocatingCurrent: Boolean,
-    externalJumpPlace: ResolvedPlace?,
+    jumpCommand: MapJumpCommand?,
     reverseGeocodedAddress: String?,
-    onSearchQueryChange: (String) -> Unit,
-    onExecuteSearch: (String) -> Unit,
+    statusMessage: String?,
+    onSearchQueryChange: (String, GeoPoint?) -> Unit,
+    onExecuteSearch: (String, GeoPoint?, Boolean) -> Unit,
     onRequestCurrentLocation: () -> Unit,
     onReverseGeocodeCenter: (Double, Double) -> Unit,
     onConfirmSelection: (bd09Point: GeoPoint, address: String) -> Unit,
     onSaveAsPresetAndSelect: (title: String, bd09Point: GeoPoint, address: String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val defaultGcj = remember(initialBd09Point, targetBd09Point) {
-        resolveInitialGcjCenter(initialBd09Point, targetBd09Point)
+    val viewport = remember(initialBd09Point, targetBd09Point, fallbackBd09Point) {
+        val start = resolveInitialCenterSpec(initialBd09Point, targetBd09Point, fallbackBd09Point)
+        MapViewportHolder(start.first, start.second, initialAddress)
     }
-    var centerGcj by remember { mutableStateOf(defaultGcj) }
-    var zoom by remember { mutableDoubleStateOf(SlippyMapProjection.DEFAULT_CAMPUS_ZOOM) }
-    var satelliteMode by remember { mutableStateOf(false) }
-    var addressText by remember { mutableStateOf(initialAddress) }
-    var showSavePresetPrompt by remember { mutableStateOf(false) }
 
     MapPickerSideEffects(
-        centerGcj = centerGcj,
-        externalJumpPlace = externalJumpPlace,
+        centerGcj = viewport.centerGcj,
+        hasConfirmedLocation = viewport.hasConfirmedLocation,
+        jumpCommand = jumpCommand,
         reverseGeocodedAddress = reverseGeocodedAddress,
+        autoLocateOnOpen = initialBd09Point == null && targetBd09Point == null,
         autoSearchKeyword = requiredLocationHint?.takeIf { initialBd09Point == null && targetBd09Point == null },
-        onJumpToPlace = { place ->
-            centerGcj = place.gcj02Point
-            zoom = SlippyMapProjection.DEFAULT_CAMPUS_ZOOM
-            if (place.address.isNotBlank()) addressText = place.address
-        },
-        onAddressResolved = { resolved -> addressText = resolved },
+        onJumpToPlace = { viewport.applyPlace(it) },
+        onAddressResolved = { viewport.addressText = it },
+        onRequestCurrentLocation = onRequestCurrentLocation,
         onReverseGeocodeCenter = onReverseGeocodeCenter,
-        onExecuteSearch = onExecuteSearch,
+        onQuickLocateKeyword = { keyword ->
+            onExecuteSearch(keyword, viewport.centerGcj.takeIf { viewport.hasConfirmedLocation }, true)
+        },
     )
-
-    val currentBd09 = remember(centerGcj) {
-        CoordinateConverter.gcj02ToBd09(centerGcj.latitude, centerGcj.longitude)
-    }
-    val targetGcj = remember(targetBd09Point) {
-        targetBd09Point?.let { CoordinateConverter.bd09ToGcj02(it.latitude, it.longitude) }
-    }
-
-    if (showSavePresetPrompt) {
-        SavePresetNameDialog(
-            initialTitle = addressText.trim().ifBlank { requiredLocationHint.orEmpty() },
-            onConfirm = { title ->
-                showSavePresetPrompt = false
-                onSaveAsPresetAndSelect(title, currentBd09, addressText.trim())
-            },
-            onDismiss = { showSavePresetPrompt = false },
-        )
-    }
 
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
     ) {
         MapPickerScaffoldContent(
-            centerGcj = centerGcj,
-            zoom = zoom,
-            satelliteMode = satelliteMode,
-            currentBd09 = currentBd09,
+            viewport = viewport,
             targetBd09 = targetBd09Point,
-            targetGcj = targetGcj,
             targetRangeMeters = targetRangeMeters,
             requiredLocationHint = requiredLocationHint,
-            addressText = addressText,
             searchQuery = searchQuery,
             isSearching = isSearching,
+            hasCompletedSearch = hasCompletedSearch,
             searchResults = searchResults,
             isLocatingCurrent = isLocatingCurrent,
-            onSearchQueryChange = onSearchQueryChange,
-            onExecuteSearch = onExecuteSearch,
-            onToggleLayer = { satelliteMode = !satelliteMode },
-            onCenterAndZoomChange = { nextCenter, nextZoom ->
-                centerGcj = nextCenter
-                zoom = nextZoom
+            statusMessage = statusMessage,
+            onSearchQueryChange = { q ->
+                onSearchQueryChange(q, viewport.centerGcj.takeIf { viewport.hasConfirmedLocation })
             },
-            onSelectPlace = { place ->
-                centerGcj = place.gcj02Point
-                zoom = SlippyMapProjection.DEFAULT_CAMPUS_ZOOM
-                addressText = place.address.ifBlank { place.title }
-                onSearchQueryChange("")
+            onExecuteSearch = { q, jumpFirst ->
+                onExecuteSearch(q, viewport.centerGcj.takeIf { viewport.hasConfirmedLocation }, jumpFirst)
             },
+            onConfirmSelection = onConfirmSelection,
+            onSaveAsPresetAndSelect = onSaveAsPresetAndSelect,
             onRequestCurrentLocation = onRequestCurrentLocation,
-            onAddressChange = { addressText = it },
-            onOpenSavePreset = { showSavePresetPrompt = true },
-            onConfirm = { onConfirmSelection(currentBd09, addressText.trim()) },
             onDismiss = onDismiss,
         )
     }
 }
 
-private fun resolveInitialGcjCenter(initialBd09: GeoPoint?, targetBd09: GeoPoint?): GeoPoint = when {
-    initialBd09 != null -> CoordinateConverter.bd09ToGcj02(initialBd09.latitude, initialBd09.longitude)
-    targetBd09 != null -> CoordinateConverter.bd09ToGcj02(targetBd09.latitude, targetBd09.longitude)
-    else -> GeoPoint(latitude = DEFAULT_CENTER_LAT, longitude = DEFAULT_CENTER_LON)
+private fun resolveInitialCenterSpec(
+    initialBd09: GeoPoint?,
+    targetBd09: GeoPoint?,
+    fallbackBd09: GeoPoint?,
+): Pair<GeoPoint, Boolean> = when {
+    initialBd09 != null -> CoordinateConverter.bd09ToGcj02(initialBd09.latitude, initialBd09.longitude) to true
+    targetBd09 != null -> CoordinateConverter.bd09ToGcj02(targetBd09.latitude, targetBd09.longitude) to true
+    fallbackBd09 != null -> CoordinateConverter.bd09ToGcj02(fallbackBd09.latitude, fallbackBd09.longitude) to true
+    else -> GeoPoint(latitude = FALLBACK_CHINA_CENTER_LAT, longitude = FALLBACK_CHINA_CENTER_LON) to false
 }
-
-private const val DEFAULT_CENTER_LAT = 39.908722
-private const val DEFAULT_CENTER_LON = 116.397499
 
 @Composable
 private fun MapPickerSideEffects(
     centerGcj: GeoPoint,
-    externalJumpPlace: ResolvedPlace?,
+    hasConfirmedLocation: Boolean,
+    jumpCommand: MapJumpCommand?,
     reverseGeocodedAddress: String?,
+    autoLocateOnOpen: Boolean,
     autoSearchKeyword: String?,
     onJumpToPlace: (ResolvedPlace) -> Unit,
     onAddressResolved: (String) -> Unit,
+    onRequestCurrentLocation: () -> Unit,
     onReverseGeocodeCenter: (Double, Double) -> Unit,
-    onExecuteSearch: (String) -> Unit,
+    onQuickLocateKeyword: (String) -> Unit,
 ) {
-    LaunchedEffect(externalJumpPlace) {
-        if (externalJumpPlace != null) onJumpToPlace(externalJumpPlace)
+    LaunchedEffect(jumpCommand?.sequence) {
+        if (jumpCommand != null) {
+            onJumpToPlace(jumpCommand.place)
+        }
     }
     LaunchedEffect(reverseGeocodedAddress) {
-        if (!reverseGeocodedAddress.isNullOrBlank()) onAddressResolved(reverseGeocodedAddress)
+        if (!reverseGeocodedAddress.isNullOrBlank()) {
+            onAddressResolved(reverseGeocodedAddress)
+        }
     }
-    LaunchedEffect(centerGcj) {
-        delay(450L)
-        onReverseGeocodeCenter(centerGcj.latitude, centerGcj.longitude)
+    LaunchedEffect(centerGcj, hasConfirmedLocation) {
+        if (hasConfirmedLocation) {
+            delay(REVERSE_GEOCODE_DEBOUNCE_MS)
+            onReverseGeocodeCenter(centerGcj.latitude, centerGcj.longitude)
+        }
     }
     LaunchedEffect(Unit) {
-        if (!autoSearchKeyword.isNullOrBlank()) onExecuteSearch(autoSearchKeyword)
+        if (!autoSearchKeyword.isNullOrBlank()) {
+            onQuickLocateKeyword(autoSearchKeyword)
+        } else if (autoLocateOnOpen) {
+            onRequestCurrentLocation()
+        }
     }
 }
 
 @Composable
 private fun MapPickerScaffoldContent(
-    centerGcj: GeoPoint,
-    zoom: Double,
-    satelliteMode: Boolean,
-    currentBd09: GeoPoint,
+    viewport: MapViewportHolder,
     targetBd09: GeoPoint?,
-    targetGcj: GeoPoint?,
     targetRangeMeters: Int?,
     requiredLocationHint: String?,
-    addressText: String,
     searchQuery: String,
     isSearching: Boolean,
+    hasCompletedSearch: Boolean,
     searchResults: List<ResolvedPlace>,
     isLocatingCurrent: Boolean,
+    statusMessage: String?,
     onSearchQueryChange: (String) -> Unit,
-    onExecuteSearch: (String) -> Unit,
-    onToggleLayer: () -> Unit,
-    onCenterAndZoomChange: (GeoPoint, Double) -> Unit,
-    onSelectPlace: (ResolvedPlace) -> Unit,
+    onExecuteSearch: (String, Boolean) -> Unit,
+    onConfirmSelection: (GeoPoint, String) -> Unit,
+    onSaveAsPresetAndSelect: (String, GeoPoint, String) -> Unit,
     onRequestCurrentLocation: () -> Unit,
-    onAddressChange: (String) -> Unit,
-    onOpenSavePreset: () -> Unit,
-    onConfirm: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val currentBd09 = remember(viewport.centerGcj) {
+        CoordinateConverter.gcj02ToBd09(viewport.centerGcj.latitude, viewport.centerGcj.longitude)
+    }
+    val targetGcj = remember(targetBd09) {
+        targetBd09?.let { CoordinateConverter.bd09ToGcj02(it.latitude, it.longitude) }
+    }
+    if (viewport.showSavePresetPrompt) {
+        SavePresetNameDialog(
+            initialTitle = viewport.addressText.trim().ifBlank { requiredLocationHint.orEmpty() },
+            onConfirm = { title ->
+                viewport.showSavePresetPrompt = false
+                onSaveAsPresetAndSelect(title, currentBd09, viewport.addressText.trim())
+            },
+            onDismiss = { viewport.showSavePresetPrompt = false },
+        )
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .navigationBarsPadding(),
+                .navigationBarsPadding()
+                .imePadding(),
         ) {
             MapPickerTopSearchSection(
                 searchQuery = searchQuery,
-                satelliteMode = satelliteMode,
+                satelliteMode = viewport.satelliteMode,
                 isSearching = isSearching,
+                hasCompletedSearch = hasCompletedSearch,
+                hasSearchResults = searchResults.isNotEmpty(),
                 requiredLocationHint = requiredLocationHint,
+                statusMessage = statusMessage,
                 onSearchQueryChange = onSearchQueryChange,
-                onExecuteSearch = { onExecuteSearch(searchQuery) },
+                onExecuteSearch = { onExecuteSearch(searchQuery, false) },
                 onQuickSearchRequired = { hint ->
                     onSearchQueryChange(hint)
-                    onExecuteSearch(hint)
+                    onExecuteSearch(hint, true)
                 },
-                onToggleLayer = onToggleLayer,
+                onToggleLayer = { viewport.satelliteMode = !viewport.satelliteMode },
                 onDismiss = onDismiss,
             )
 
-            Box(modifier = Modifier.weight(1f)) {
-                InteractiveSlippyMapCanvas(
-                    centerGcj = centerGcj,
-                    zoom = zoom,
-                    satelliteMode = satelliteMode,
-                    targetGcj = targetGcj,
-                    targetRangeMeters = targetRangeMeters,
-                    onCenterAndZoomChange = onCenterAndZoomChange,
-                )
-
-                if (searchResults.isNotEmpty()) {
-                    SearchResultsOverlayCard(
-                        results = searchResults,
-                        onSelectPlace = onSelectPlace,
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(horizontal = ToolboxSpacing.medium, vertical = ToolboxSpacing.small),
-                    )
-                }
-
-                MapFloatingControls(
-                    isLocatingCurrent = isLocatingCurrent,
-                    onZoomIn = {
-                        onCenterAndZoomChange(centerGcj, (zoom + 1.0).coerceAtMost(SlippyMapProjection.MAX_ZOOM))
-                    },
-                    onZoomOut = {
-                        onCenterAndZoomChange(centerGcj, (zoom - 1.0).coerceAtLeast(SlippyMapProjection.MIN_ZOOM))
-                    },
-                    onLocateMe = onRequestCurrentLocation,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(ToolboxSpacing.medium),
-                )
-            }
+            MapViewportLayerBox(
+                viewport = viewport,
+                targetGcj = targetGcj,
+                targetRangeMeters = targetRangeMeters,
+                searchResults = searchResults,
+                isLocatingCurrent = isLocatingCurrent,
+                onClearSearchQuery = { onSearchQueryChange("") },
+                onRequestCurrentLocation = onRequestCurrentLocation,
+                modifier = Modifier.weight(1f),
+            )
 
             MapPickerBottomConfirmPanel(
                 selectedBd09 = currentBd09,
+                hasConfirmedLocation = viewport.hasConfirmedLocation,
                 targetBd09 = targetBd09,
                 targetRangeMeters = targetRangeMeters,
-                addressText = addressText,
-                onAddressChange = onAddressChange,
-                onOpenSavePreset = onOpenSavePreset,
-                onConfirm = onConfirm,
+                addressText = viewport.addressText,
+                onAddressChange = { viewport.addressText = it },
+                onOpenSavePreset = { viewport.showSavePresetPrompt = true },
+                onConfirm = { onConfirmSelection(currentBd09, viewport.addressText.trim()) },
             )
         }
+    }
+}
+
+@Composable
+private fun MapViewportLayerBox(
+    viewport: MapViewportHolder,
+    targetGcj: GeoPoint?,
+    targetRangeMeters: Int?,
+    searchResults: List<ResolvedPlace>,
+    isLocatingCurrent: Boolean,
+    onClearSearchQuery: () -> Unit,
+    onRequestCurrentLocation: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier) {
+        InteractiveSlippyMapCanvas(
+            centerGcj = viewport.centerGcj,
+            zoom = viewport.zoom,
+            satelliteMode = viewport.satelliteMode,
+            targetGcj = targetGcj,
+            targetRangeMeters = targetRangeMeters,
+            onCenterAndZoomChange = viewport::updateCenterAndZoom,
+        )
+
+        if (searchResults.isNotEmpty()) {
+            SearchResultsOverlayCard(
+                results = searchResults,
+                onSelectPlace = { place ->
+                    viewport.applyPlace(place, fallbackTitle = true)
+                    onClearSearchQuery()
+                },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(horizontal = ToolboxSpacing.medium, vertical = ToolboxSpacing.small),
+            )
+        }
+
+        MapFloatingControls(
+            isLocatingCurrent = isLocatingCurrent,
+            onZoomIn = {
+                viewport.updateCenterAndZoom(
+                    viewport.centerGcj,
+                    (viewport.zoom + 1.0).coerceAtMost(SlippyMapProjection.MAX_ZOOM),
+                )
+            },
+            onZoomOut = {
+                viewport.updateCenterAndZoom(
+                    viewport.centerGcj,
+                    (viewport.zoom - 1.0).coerceAtLeast(SlippyMapProjection.MIN_ZOOM),
+                )
+            },
+            onLocateMe = onRequestCurrentLocation,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(ToolboxSpacing.medium),
+        )
     }
 }
 
@@ -325,7 +443,10 @@ private fun MapPickerTopSearchSection(
     searchQuery: String,
     satelliteMode: Boolean,
     isSearching: Boolean,
+    hasCompletedSearch: Boolean,
+    hasSearchResults: Boolean,
     requiredLocationHint: String?,
+    statusMessage: String?,
     onSearchQueryChange: (String) -> Unit,
     onExecuteSearch: () -> Unit,
     onQuickSearchRequired: (String) -> Unit,
@@ -333,6 +454,13 @@ private fun MapPickerTopSearchSection(
     onDismiss: () -> Unit,
 ) {
     val focusManager = LocalFocusManager.current
+    val bannerHint = resolveSearchBannerHint(
+        statusMessage = statusMessage,
+        hasCompletedSearch = hasCompletedSearch,
+        isSearching = isSearching,
+        searchQuery = searchQuery,
+        hasSearchResults = hasSearchResults,
+    )
     Surface(tonalElevation = 2.dp) {
         Column(
             modifier = Modifier
@@ -347,13 +475,14 @@ private fun MapPickerTopSearchSection(
                 placeholder = { Text(text = "搜索学校、教学楼或地标名称") },
                 leadingIcon = { Icon(imageVector = Icons.Outlined.Search, contentDescription = null) },
                 trailingIcon = {
-                    if (searchQuery.isNotBlank()) {
-                        TextButton(
-                            onClick = {
+                    if (searchQuery.isNotEmpty()) {
+                        SearchInputTrailingActions(
+                            onClear = { onSearchQueryChange("") },
+                            onSearch = {
                                 focusManager.clearFocus()
                                 onExecuteSearch()
                             },
-                        ) { Text(text = "搜索") }
+                        )
                     }
                 },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -377,10 +506,60 @@ private fun MapPickerTopSearchSection(
                     },
                 )
             }
+            if (!bannerHint.isNullOrBlank()) {
+                SearchWarningBanner(message = bannerHint)
+            }
             if (isSearching) {
                 ToolboxLinearProgressBar()
             }
         }
+    }
+}
+
+@Composable
+private fun SearchInputTrailingActions(onClear: () -> Unit, onSearch: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onClear) {
+            Icon(imageVector = Icons.Outlined.Close, contentDescription = "清空搜索词")
+        }
+        TextButton(onClick = onSearch) { Text(text = "搜索") }
+    }
+}
+
+private fun resolveSearchBannerHint(
+    statusMessage: String?,
+    hasCompletedSearch: Boolean,
+    isSearching: Boolean,
+    searchQuery: String,
+    hasSearchResults: Boolean,
+): String? {
+    if (!statusMessage.isNullOrBlank()) return statusMessage
+    val isEmptyResult = hasCompletedSearch && !isSearching && !hasSearchResults
+    return if (isEmptyResult && searchQuery.isNotBlank()) {
+        "未找到匹配地点，请尝试输入「学校名称 + 教学楼/地标」"
+    } else {
+        null
+    }
+}
+
+@Composable
+private fun SearchWarningBanner(message: String) {
+    Surface(
+        color = ToolboxTheme.extendedColors.warningContainer,
+        shape = RoundedCornerShape(ToolboxRadius.chip),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = ToolboxSpacing.extraSmall),
+    ) {
+        Text(
+            text = message,
+            color = ToolboxTheme.extendedColors.onWarningContainer,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(
+                horizontal = ToolboxSpacing.small,
+                vertical = ToolboxSpacing.extraSmall,
+            ),
+        )
     }
 }
 
@@ -433,18 +612,18 @@ private fun InteractiveSlippyMapCanvas(
     onCenterAndZoomChange: (GeoPoint, Double) -> Unit,
 ) {
     val density = LocalDensity.current
-    val baseTilePx = with(density) { 256.dp.toPx().toDouble() }
+    val baseTilePx = with(density) { SlippyMapProjection.BASE_TILE_DP.dp.toPx().toDouble() }
     val focusManager = LocalFocusManager.current
+    val tileCache = remember { TileBitmapCache() }
 
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .clipToBounds(),
     ) {
         val viewportWidthPx = constraints.maxWidth.toFloat()
         val viewportHeightPx = constraints.maxHeight.toFloat()
-        val tiles = remember(centerGcj, zoom, viewportWidthPx, viewportHeightPx, satelliteMode) {
+        val tiles = remember(centerGcj, zoom, baseTilePx, viewportWidthPx, viewportHeightPx, satelliteMode) {
             SlippyMapProjection.computeVisibleTiles(
                 center = centerGcj,
                 zoom = zoom,
@@ -455,7 +634,12 @@ private fun InteractiveSlippyMapCanvas(
             )
         }
 
-        Box(
+        TilePrefetchEffect(tiles = tiles, satelliteMode = satelliteMode, tileCache = tileCache)
+
+        val primaryColor = MaterialTheme.colorScheme.primary
+        val cacheRevision = tileCache.revision
+
+        Canvas(
             modifier = Modifier
                 .fillMaxSize()
                 .mapGestureModifier(
@@ -468,32 +652,162 @@ private fun InteractiveSlippyMapCanvas(
                     onCenterAndZoomChange = onCenterAndZoomChange,
                 ),
         ) {
-            tiles.forEach { tile ->
-                key(tile.z, tile.x, tile.y, satelliteMode) {
-                    val sizeDp = with(density) { tile.sizePx.toDp() }
-                    AsyncImage(
-                        model = tile.url,
-                        contentDescription = null,
-                        contentScale = ContentScale.FillBounds,
-                        modifier = Modifier
-                            .offset { IntOffset(tile.offsetX, tile.offsetY) }
-                            .size(sizeDp),
-                    )
+            // 读取 cacheRevision 订阅瓦片异步解码完成后的画布重绘
+            if (cacheRevision >= 0) {
+                drawRect(color = if (satelliteMode) SATELLITE_MAP_BG_COLOR else STANDARD_MAP_BG_COLOR)
+                tiles.forEach { tile ->
+                    drawTileWithFallback(tileCache = tileCache, tile = tile, satelliteMode = satelliteMode)
                 }
             }
             if (targetGcj != null) {
-                TargetRangeOverlay(
+                drawTargetRangeOverlay(
                     targetGcj = targetGcj,
                     centerGcj = centerGcj,
                     zoom = zoom,
                     baseTilePx = baseTilePx,
                     targetRangeMeters = targetRangeMeters,
+                    primaryColor = primaryColor,
                 )
             }
         }
 
         CenterPinMarker(modifier = Modifier.align(Alignment.Center))
     }
+}
+
+@Composable
+private fun TilePrefetchEffect(
+    tiles: List<SlippyMapProjection.TileSpec>,
+    satelliteMode: Boolean,
+    tileCache: TileBitmapCache,
+) {
+    val context = LocalContext.current
+    LaunchedEffect(tiles, satelliteMode) {
+        val imageLoader = SingletonImageLoader.get(context)
+        val urls = LinkedHashSet<String>(tiles.size * 2)
+        tiles.forEach { tile ->
+            urls += tile.url
+            tile.overlayUrl?.let { urls += it }
+        }
+        urls.forEach { url ->
+            if (tileCache.markInFlightIfNeeded(url)) {
+                launch {
+                    val bitmap = runCatching {
+                        val req = ImageRequest.Builder(context)
+                            .data(url)
+                            .allowHardware(false)
+                            .build()
+                        val res = imageLoader.execute(req)
+                        (res as? SuccessResult)?.image?.toBitmap()?.asImageBitmap()
+                    }.getOrNull()
+                    tileCache.completeLoad(url, bitmap)
+                }
+            }
+        }
+    }
+}
+
+private fun DrawScope.drawTileWithFallback(
+    tileCache: TileBitmapCache,
+    tile: SlippyMapProjection.TileSpec,
+    satelliteMode: Boolean,
+) {
+    val dstOffset = IntOffset(tile.offsetX, tile.offsetY)
+    val dstSize = IntSize(tile.widthPx, tile.heightPx)
+    val exactBitmap = tileCache.get(tile.url)
+    if (exactBitmap != null) {
+        drawImage(
+            image = exactBitmap,
+            dstOffset = dstOffset,
+            dstSize = dstSize,
+            filterQuality = FilterQuality.Medium,
+        )
+    } else {
+        drawParentQuadrantFallback(
+            tileCache = tileCache,
+            tile = tile,
+            satelliteMode = satelliteMode,
+            dstOffset = dstOffset,
+            dstSize = dstSize,
+        )
+    }
+
+    val overlayBitmap = tile.overlayUrl?.let(tileCache::get)
+    if (overlayBitmap != null) {
+        drawImage(
+            image = overlayBitmap,
+            dstOffset = dstOffset,
+            dstSize = dstSize,
+            filterQuality = FilterQuality.Medium,
+        )
+    }
+}
+
+private fun DrawScope.drawParentQuadrantFallback(
+    tileCache: TileBitmapCache,
+    tile: SlippyMapProjection.TileSpec,
+    satelliteMode: Boolean,
+    dstOffset: IntOffset,
+    dstSize: IntSize,
+) {
+    val maxStep = (tile.z - SlippyMapProjection.MIN_ZOOM.toInt()).coerceAtMost(MAX_PARENT_FALLBACK_STEPS)
+    for (step in 1..maxStep) {
+        val parentZ = tile.z - step
+        val parentX = tile.x shr step
+        val parentY = tile.y shr step
+        val parentUrl = SlippyMapProjection.buildTileUrlForKey(parentZ, parentX, parentY, satelliteMode)
+        val parentBitmap = tileCache.get(parentUrl)
+        if (parentBitmap != null) {
+            val gridSpan = 1 shl step
+            val subX = tile.x and (gridSpan - 1)
+            val subY = tile.y and (gridSpan - 1)
+            val srcTileWidth = (parentBitmap.width / gridSpan).coerceAtLeast(1)
+            val srcTileHeight = (parentBitmap.height / gridSpan).coerceAtLeast(1)
+            drawImage(
+                image = parentBitmap,
+                srcOffset = IntOffset(subX * srcTileWidth, subY * srcTileHeight),
+                srcSize = IntSize(srcTileWidth, srcTileHeight),
+                dstOffset = dstOffset,
+                dstSize = dstSize,
+                filterQuality = FilterQuality.Low,
+            )
+            return
+        }
+    }
+}
+
+private fun DrawScope.drawTargetRangeOverlay(
+    targetGcj: GeoPoint,
+    centerGcj: GeoPoint,
+    zoom: Double,
+    baseTilePx: Double,
+    targetRangeMeters: Int?,
+    primaryColor: Color,
+) {
+    val targetOffset = SlippyMapProjection.pointToViewportOffset(
+        target = targetGcj,
+        center = centerGcj,
+        zoom = zoom,
+        baseTilePx = baseTilePx,
+        viewportWidthPx = size.width,
+        viewportHeightPx = size.height,
+    )
+    if (targetRangeMeters != null && targetRangeMeters > 0) {
+        val radiusPx = SlippyMapProjection.metersToPixels(
+            meters = targetRangeMeters,
+            latitude = targetGcj.latitude,
+            zoom = zoom,
+            baseTilePx = baseTilePx,
+        )
+        drawCircle(color = primaryColor.copy(alpha = 0.18f), radius = radiusPx, center = targetOffset)
+        drawCircle(
+            color = primaryColor.copy(alpha = 0.65f),
+            radius = radiusPx,
+            center = targetOffset,
+            style = Stroke(width = 2.dp.toPx()),
+        )
+    }
+    drawCircle(color = primaryColor, radius = 6.dp.toPx(), center = targetOffset)
 }
 
 @Composable
@@ -509,17 +823,20 @@ private fun Modifier.mapGestureModifier(
     val currentCenter by rememberUpdatedState(centerGcj)
     val currentZoom by rememberUpdatedState(zoom)
     return this
-        .pointerInput(baseTilePx) {
-            detectTransformGestures { _, pan, gestureZoom, _ ->
+        .pointerInput(baseTilePx, viewportWidthPx, viewportHeightPx) {
+            detectTransformGestures { centroid, pan, gestureZoom, _ ->
                 onClearFocus()
                 val nextZoom = (currentZoom + ln(gestureZoom.toDouble()) / ln(2.0))
                     .coerceIn(SlippyMapProjection.MIN_ZOOM, SlippyMapProjection.MAX_ZOOM)
-                val nextCenter = SlippyMapProjection.panByPixels(
+                val nextCenter = SlippyMapProjection.transformViewport(
                     center = currentCenter,
-                    zoom = nextZoom,
+                    currentZoom = currentZoom,
+                    nextZoom = nextZoom,
                     baseTilePx = baseTilePx,
-                    deltaXPx = pan.x.toDouble(),
-                    deltaYPx = pan.y.toDouble(),
+                    viewportWidthPx = viewportWidthPx,
+                    viewportHeightPx = viewportHeightPx,
+                    centroid = centroid,
+                    pan = pan,
                 )
                 onCenterAndZoomChange(nextCenter, nextZoom)
             }
@@ -539,49 +856,23 @@ private fun Modifier.mapGestureModifier(
                     )
                     onCenterAndZoomChange(nextCenter, currentZoom)
                 },
-                onDoubleTap = {
+                onDoubleTap = { tapOffset ->
+                    onClearFocus()
                     val nextZoom = (currentZoom + 1.0).coerceAtMost(SlippyMapProjection.MAX_ZOOM)
-                    onCenterAndZoomChange(currentCenter, nextZoom)
+                    val nextCenter = SlippyMapProjection.transformViewport(
+                        center = currentCenter,
+                        currentZoom = currentZoom,
+                        nextZoom = nextZoom,
+                        baseTilePx = baseTilePx,
+                        viewportWidthPx = viewportWidthPx,
+                        viewportHeightPx = viewportHeightPx,
+                        centroid = tapOffset,
+                        pan = androidx.compose.ui.geometry.Offset.Zero,
+                    )
+                    onCenterAndZoomChange(nextCenter, nextZoom)
                 },
             )
         }
-}
-
-@Composable
-private fun TargetRangeOverlay(
-    targetGcj: GeoPoint,
-    centerGcj: GeoPoint,
-    zoom: Double,
-    baseTilePx: Double,
-    targetRangeMeters: Int?,
-) {
-    val primaryColor = MaterialTheme.colorScheme.primary
-    Canvas(modifier = Modifier.fillMaxSize()) {
-        val targetOffset = SlippyMapProjection.pointToViewportOffset(
-            target = targetGcj,
-            center = centerGcj,
-            zoom = zoom,
-            baseTilePx = baseTilePx,
-            viewportWidthPx = size.width,
-            viewportHeightPx = size.height,
-        )
-        if (targetRangeMeters != null && targetRangeMeters > 0) {
-            val radiusPx = SlippyMapProjection.metersToPixels(
-                meters = targetRangeMeters,
-                latitude = targetGcj.latitude,
-                zoom = zoom,
-                baseTilePx = baseTilePx,
-            )
-            drawCircle(color = primaryColor.copy(alpha = 0.18f), radius = radiusPx, center = targetOffset)
-            drawCircle(
-                color = primaryColor.copy(alpha = 0.65f),
-                radius = radiusPx,
-                center = targetOffset,
-                style = Stroke(width = 2.dp.toPx()),
-            )
-        }
-        drawCircle(color = primaryColor, radius = 6.dp.toPx(), center = targetOffset)
-    }
 }
 
 @Composable
@@ -610,13 +901,17 @@ private fun SearchResultsOverlayCard(
     onSelectPlace: (ResolvedPlace) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val focusManager = LocalFocusManager.current
     ElevatedCard(modifier = modifier.fillMaxWidth()) {
-        LazyColumn(modifier = Modifier.heightIn(max = 220.dp)) {
+        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
             items(results) { item ->
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { onSelectPlace(item) }
+                        .clickable {
+                            focusManager.clearFocus()
+                            onSelectPlace(item)
+                        }
                         .padding(horizontal = ToolboxSpacing.medium, vertical = ToolboxSpacing.small),
                 ) {
                     Row(
@@ -688,6 +983,7 @@ private fun MapFloatingControls(
 @Composable
 private fun MapPickerBottomConfirmPanel(
     selectedBd09: GeoPoint,
+    hasConfirmedLocation: Boolean,
     targetBd09: GeoPoint?,
     targetRangeMeters: Int?,
     addressText: String,
@@ -705,9 +1001,13 @@ private fun MapPickerBottomConfirmPanel(
                 .padding(ToolboxSpacing.medium),
             verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
         ) {
-            val coordLabel = "已选坐标：${CoordinateConverter.formatCoordinate(selectedBd09.latitude)}, " +
-                CoordinateConverter.formatCoordinate(selectedBd09.longitude)
-            val distanceHint = if (targetBd09 != null) {
+            val coordLabel = if (hasConfirmedLocation) {
+                "已选坐标：${CoordinateConverter.formatCoordinate(selectedBd09.latitude)}, " +
+                    CoordinateConverter.formatCoordinate(selectedBd09.longitude)
+            } else {
+                "正在获取定位，也可直接搜索或拖动地图选点"
+            }
+            val distanceHint = if (hasConfirmedLocation && targetBd09 != null) {
                 val dist = CoordinateConverter.distanceMeters(selectedBd09, targetBd09).roundToInt()
                 val status = if (targetRangeMeters != null && dist <= targetRangeMeters) "范围内" else "距目标 ${dist}m"
                 " · $status"

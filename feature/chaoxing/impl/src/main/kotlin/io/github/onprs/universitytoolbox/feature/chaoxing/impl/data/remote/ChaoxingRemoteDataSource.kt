@@ -5,8 +5,14 @@ import io.github.onprs.universitytoolbox.core.common.result.AppResult
 import io.github.onprs.universitytoolbox.core.common.result.DomainError
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.AccountContext
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.AccountCookieVault
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -47,6 +53,8 @@ class ChaoxingRemoteDataSource @Inject constructor(
     private val endpointConfig: ChaoxingEndpointConfig,
     private val dispatchers: DispatcherProvider,
 ) {
+    private val endedAttendStatusCache = ConcurrentHashMap<String, ChaoxingUserSignStatus>()
+
     /** 拉取指定账号的课程列表（优先移动端 JSON API，异常时自动降级新版 Web HTML 解析）。 */
     suspend fun fetchCourses(accountId: String): AppResult<List<ChaoxingCourse>> {
         return withContext(dispatchers.io) {
@@ -126,10 +134,80 @@ class ChaoxingRemoteDataSource @Inject constructor(
             }
         }
 
-        val items = dto.data?.activeList.orEmpty().map { item ->
+        val baseItems = dto.data?.activeList.orEmpty().map { item ->
             ChaoxingDomainMapper.toActivity(item, courseId = courseId, clazzId = clazzId)
         }
-        AppResult.Success(items)
+        val enrichedItems = enrichSignActivitiesAttendStatus(accountId, baseItems)
+        AppResult.Success(enrichedItems)
+    }
+
+    /** 只读查询单次签到活动中当前学生的真实考勤状态与设备记录（`/v2/apis/sign/getAttendInfo`）。 */
+    suspend fun fetchSignAttendRecord(accountId: String, activeId: Long): AppResult<ChaoxingAttendRecord> =
+        withContext(dispatchers.io) {
+            val url = endpointConfig.getAttendInfoUrl.toHttpUrl().newBuilder()
+                .addQueryParameter("activeId", activeId.toString())
+                .build()
+            val request = Request.Builder()
+                .url(url)
+                .header(ChaoxingHttpExecutor.HEADER_USER_AGENT, ChaoxingEndpointConfig.MOBILE_WEB_USER_AGENT)
+                .tag(AccountContext::class.java, AccountContext(accountId))
+                .get()
+                .build()
+
+            val response = when (val result = executor.executeText(request)) {
+                is AppResult.Success -> result.data
+                is AppResult.Failure -> return@withContext result
+            }
+            if (executor.isSessionExpiredRedirect(response)) {
+                return@withContext AppResult.Failure(DomainError.Unauthorized("会话已过期，请重新登录"))
+            }
+            val dto = executor.decodeJson<AttendInfoResponseDto>(response.body)
+                ?: return@withContext AppResult.Failure(DomainError.Network("考勤状态解析失败"))
+            val data = dto.data
+            if (dto.result != 1 || data == null) {
+                val err = dto.errorMsg ?: dto.msg ?: "获取考勤状态失败"
+                return@withContext AppResult.Failure(DomainError.Network(err, httpCode = response.code))
+            }
+            AppResult.Success(ChaoxingDomainMapper.toAttendRecord(data, fallbackActiveId = activeId))
+        }
+
+    private suspend fun enrichSignActivitiesAttendStatus(
+        accountId: String,
+        activities: List<ChaoxingActivity>,
+    ): List<ChaoxingActivity> = coroutineScope {
+        val semaphore = Semaphore(ATTEND_INFO_CONCURRENCY)
+        activities.map { activity ->
+            if (!activity.isSignRelated) {
+                async { activity }
+            } else {
+                val cacheKey = attendCacheKey(accountId, activity.activeId)
+                val cachedEnded = if (activity.activityStatus == ChaoxingActivityStatus.ENDED) {
+                    endedAttendStatusCache[cacheKey]
+                } else {
+                    null
+                }
+                if (cachedEnded != null) {
+                    async { activity.copy(userStatus = cachedEnded) }
+                } else {
+                    async {
+                        val resolved = semaphore.withPermit {
+                            val attendRes = fetchSignAttendRecord(accountId, activity.activeId)
+                            (attendRes as? AppResult.Success)?.data?.userStatus
+                        }
+                        if (resolved != null) {
+                            if (activity.activityStatus == ChaoxingActivityStatus.ENDED &&
+                                resolved != ChaoxingUserSignStatus.UNKNOWN
+                            ) {
+                                endedAttendStatusCache[cacheKey] = resolved
+                            }
+                            activity.copy(userStatus = resolved)
+                        } else {
+                            activity
+                        }
+                    }
+                }
+            }
+        }.awaitAll()
     }
 
     /** 拉取单次签到活动的详细配置（使用 `getPPTActiveInfo` 实测有效端点）。 */
@@ -350,30 +428,25 @@ class ChaoxingRemoteDataSource @Inject constructor(
             if (executor.isSessionExpiredRedirect(response)) {
                 return@withContext AppResult.Failure(DomainError.Unauthorized("会话已过期，请重新登录"))
             }
-            AppResult.Success(ChaoxingSignResponseParser.parse(response.body))
+            val parsedOutcome = ChaoxingSignResponseParser.parse(response.body)
+            if (parsedOutcome is ChaoxingSignRawOutcome.Success ||
+                parsedOutcome is ChaoxingSignRawOutcome.AlreadySigned
+            ) {
+                endedAttendStatusCache.remove(attendCacheKey(accountId, params.activeId))
+            }
+            AppResult.Success(parsedOutcome)
         }
     }
 
     /** 只读查询已签活动在服务端记录的真实设备码与客户端 UA，用于同步统一设备码。 */
-    suspend fun fetchSignRecordDeviceInfo(accountId: String, activeId: Long): Pair<String, String?>? =
-        withContext(dispatchers.io) {
-            val url = endpointConfig.signInV2Url.toHttpUrl().newBuilder()
-                .addQueryParameter("activeId", activeId.toString())
-                .build()
-            val request = Request.Builder()
-                .url(url)
-                .header(ChaoxingHttpExecutor.HEADER_USER_AGENT, ChaoxingEndpointConfig.MOBILE_WEB_USER_AGENT)
-                .tag(AccountContext::class.java, AccountContext(accountId))
-                .get()
-                .build()
-            val response = (executor.executeText(request) as? AppResult.Success)?.data ?: return@withContext null
-            if (executor.isSessionExpiredRedirect(response)) {
-                return@withContext null
-            }
-            val dto = executor.decodeJson<SignInRecordResponseDto>(response.body)
-            val deviceCode = dto?.data?.deviceCode?.trim()?.takeIf { it.isNotEmpty() } ?: return@withContext null
-            deviceCode to dto.data.useragent
-        }
+    suspend fun fetchSignRecordDeviceInfo(accountId: String, activeId: Long): Pair<String, String?>? {
+        val record = (fetchSignAttendRecord(accountId, activeId) as? AppResult.Success)?.data ?: return null
+        val isSignedRecord = record.userStatus == ChaoxingUserSignStatus.SIGNED ||
+            record.userStatus == ChaoxingUserSignStatus.LATE ||
+            record.userStatus == ChaoxingUserSignStatus.TEACHER_SIGNED
+        val deviceCode = record.deviceCode?.takeIf { isSignedRecord && it.isNotBlank() } ?: return null
+        return deviceCode to record.userAgent
+    }
 
     /** 解析课堂签到二维码内容；若为跳转短链且缺 `enc` 则追踪一次重定向提取 `rcode`。 */
     suspend fun resolveQrPayload(accountId: String, rawQrContent: String): AppResult<ChaoxingQrPayload> {
@@ -432,7 +505,10 @@ class ChaoxingRemoteDataSource @Inject constructor(
         return AppResult.Success(htmlParser.parseCourseListHtml(response.body))
     }
 
+    private fun attendCacheKey(accountId: String, activeId: Long): String = "$accountId:$activeId"
+
     companion object {
+        private const val ATTEND_INFO_CONCURRENCY = 6
         private const val PAN_AUTH_EXPIRED_NEW_CODE = 200013
         private const val PAN_AUTH_EXPIRED_CODE = -10
         private const val DEFAULT_PHOTO_FILENAME = "sign_photo.jpg"

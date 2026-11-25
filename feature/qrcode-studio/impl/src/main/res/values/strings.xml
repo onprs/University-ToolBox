@@ -12,7 +12,6 @@
     <string name="feature_qrcodestudio_notice_image_failed">Failed to decode the selected image</string>
     <string name="feature_qrcodestudio_copy_field">Copy Value</string>
     <string name="feature_qrcodestudio_selected_badge">Current</string>
-    <string name="feature_qrcodestudio_inspect_text">Inspect Text</string>
     <string name="feature_qrcodestudio_paste_hint">Paste QR code or barcode content</string>
     <string name="feature_qrcodestudio_inspect_button">Parse Content</string>
     <string name="feature_qrcodestudio_clear_history">Clear History</string>

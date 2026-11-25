@@ -1,6 +1,5 @@
 package io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.viewmodel
 
-import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -8,7 +7,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.onprs.universitytoolbox.core.common.result.AppResult
 import io.github.onprs.universitytoolbox.core.license.api.LicenseCoordinator
 import io.github.onprs.universitytoolbox.core.license.api.LicenseTier
-import io.github.onprs.universitytoolbox.core.scanner.BarcodeScanResult
 import io.github.onprs.universitytoolbox.core.scanner.BarcodeScanner
 import io.github.onprs.universitytoolbox.feature.chaoxing.api.CHAOXING_TOOL_ID
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingAuthRemoteDataSource
@@ -48,16 +46,6 @@ class ChaoxingAccountsViewModel @Inject constructor(
     private val licenseCoordinator: LicenseCoordinator,
     private val barcodeScanner: BarcodeScanner,
 ) : ViewModel() {
-    constructor(
-        accountManager: ChaoxingAccountManager,
-        authRemoteDataSource: ChaoxingAuthRemoteDataSource,
-        licenseCoordinator: LicenseCoordinator,
-    ) : this(
-        accountManager = accountManager,
-        authRemoteDataSource = authRemoteDataSource,
-        licenseCoordinator = licenseCoordinator,
-        barcodeScanner = EmptyBarcodeScanner,
-    )
 
     private val mutableUiState = MutableStateFlow(ChaoxingAccountsUiState())
     val uiState: StateFlow<ChaoxingAccountsUiState> = mutableUiState.asStateFlow()
@@ -66,6 +54,7 @@ class ChaoxingAccountsViewModel @Inject constructor(
     val events: Flow<ChaoxingAccountsUiEvent> = eventChannel.receiveAsFlow()
 
     private var qrPollingJob: Job? = null
+    private var schoolSearchJob: Job? = null
     private var lastConsumedInitialPayload: String? = null
 
     init {
@@ -257,14 +246,17 @@ class ChaoxingAccountsViewModel @Inject constructor(
     }
 
     fun updateSchoolKeyword(keyword: String) {
+        schoolSearchJob?.cancel()
         mutableUiState.update { it.copy(schoolKeyword = keyword) }
-        if (keyword.trim().length < MIN_SCHOOL_QUERY_LEN) {
-            mutableUiState.update { it.copy(schoolSuggestions = emptyList()) }
+        val trimmed = keyword.trim()
+        if (trimmed.length < MIN_SCHOOL_QUERY_LEN) {
+            mutableUiState.update { it.copy(schoolSuggestions = emptyList(), isSearchingSchools = false) }
             return
         }
-        viewModelScope.launch {
+        schoolSearchJob = viewModelScope.launch {
+            delay(SCHOOL_SEARCH_DEBOUNCE_MS)
             mutableUiState.update { it.copy(isSearchingSchools = true) }
-            when (val res = authRemoteDataSource.searchSchools(keyword)) {
+            when (val res = authRemoteDataSource.searchSchools(trimmed)) {
                 is AppResult.Success -> mutableUiState.update {
                     it.copy(schoolSuggestions = res.data, isSearchingSchools = false)
                 }
@@ -380,8 +372,8 @@ class ChaoxingAccountsViewModel @Inject constructor(
 
                     else -> "已绑定账号 ${result.account.maskedAccount}"
                 }
-                mutableUiState.update {
-                    it.copy(
+                mutableUiState.update { current ->
+                    current.copy(
                         accountInput = "",
                         passwordInput = "",
                         importShareInput = "",
@@ -389,7 +381,7 @@ class ChaoxingAccountsViewModel @Inject constructor(
                         captchaValidateInput = "",
                         qrSession = null,
                         qrImage = null,
-                        qrStatusText = "扫码登录成功",
+                        qrStatusText = if (current.qrSession != null) "扫码登录成功" else null,
                         feedbackMessage = feedback,
                         isErrorFeedback = false,
                     )
@@ -444,11 +436,13 @@ class ChaoxingAccountsViewModel @Inject constructor(
 
     override fun onCleared() {
         qrPollingJob?.cancel()
+        schoolSearchJob?.cancel()
         super.onCleared()
     }
 
     companion object {
         private const val MIN_SCHOOL_QUERY_LEN = 2
+        private const val SCHOOL_SEARCH_DEBOUNCE_MS = 300L
         private const val QR_POLL_INTERVAL_MS = 3_000L
     }
 }
@@ -461,9 +455,3 @@ private data class AccountsReactiveSnapshot(
     val canBindMore: Boolean,
     val hideDeviceCodeBadge: Boolean,
 )
-
-private object EmptyBarcodeScanner : BarcodeScanner {
-    override suspend fun scanImageUri(uri: Uri): AppResult<List<BarcodeScanResult>> = AppResult.Success(emptyList())
-
-    override suspend fun scanBitmap(bitmap: Bitmap): AppResult<List<BarcodeScanResult>> = AppResult.Success(emptyList())
-}

@@ -132,7 +132,7 @@ private fun SignRecordCard(record: ChaoxingSignRecordEntity) {
                     modifier = Modifier.weight(1f),
                 )
                 ToolboxStatusBadge(
-                    text = record.outcome,
+                    text = formatRecordOutcomeLabel(record.outcome),
                     containerColor = if (isSuccess) {
                         ToolboxTheme.extendedColors.successContainer
                     } else {

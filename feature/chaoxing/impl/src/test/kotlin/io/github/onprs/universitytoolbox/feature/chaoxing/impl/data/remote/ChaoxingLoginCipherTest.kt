@@ -28,10 +28,4 @@ class ChaoxingLoginCipherTest {
         assertTrue(cipher.endsWith("="))
         assertEquals("1234567890123456", ChaoxingLoginCipher.decrypt(cipher))
     }
-
-    @Test
-    fun `encryptSmsCode applies url encoding on base64 output`() {
-        val encoded = ChaoxingLoginCipher.encryptSmsCode("123456")
-        assertTrue(encoded.contains("%2B") || encoded.contains("%2F") || encoded.contains("%3D"))
-    }
 }

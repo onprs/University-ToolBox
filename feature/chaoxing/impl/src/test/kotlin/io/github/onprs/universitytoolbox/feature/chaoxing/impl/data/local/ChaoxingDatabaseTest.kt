@@ -165,7 +165,7 @@ class ChaoxingDatabaseTest {
         assertEquals("综合体育馆", all.first().title)
 
         presetDao.deleteById(id2)
-        val remaining = presetDao.getAll()
+        val remaining = presetDao.observeAll().first()
         assertEquals(1, remaining.size)
         assertEquals("第一教学楼", remaining.single().title)
     }

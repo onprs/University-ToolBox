@@ -4,7 +4,6 @@
     <string name="chaoxing_tool_description">Multi-account courses, attendance monitoring, and check-in assistant</string>
     <string name="chaoxing_dashboard_title">Course Attendance</string>
     <string name="chaoxing_accounts_title">Account Management</string>
-    <string name="chaoxing_activities_title">Course Activities</string>
     <string name="chaoxing_sign_execution_title">Check-in Execution</string>
     <string name="chaoxing_records_title">Check-in Records</string>
     <string name="chaoxing_add_account">Bind Account</string>

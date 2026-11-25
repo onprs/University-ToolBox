@@ -85,47 +85,56 @@ fun EntryProviderScope<NavKey>.installChaoxingEntries() {
         )
     }
 
-    registerChaoxingSubEntries(
-        onNavigate = { /* 深链直达子路由时由当前窗口承接或通过系统返回退出 */ },
-        onBack = { /* 子路由直达时由宿主 NavDisplay 统一处理返回 */ },
-        includeDashboard = false,
-        includeAccounts = false,
-    )
+    entry<ChaoxingNavKey.CourseActivities> { key ->
+        val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+        ChaoxingRootFlow(
+            initialRoute = key,
+            onExitToHost = { backDispatcher?.onBackPressed() },
+        )
+    }
+
+    entry<ChaoxingNavKey.SignExecution> { key ->
+        val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+        ChaoxingRootFlow(
+            initialRoute = key,
+            onExitToHost = { backDispatcher?.onBackPressed() },
+        )
+    }
+
+    entry<ChaoxingNavKey.SignRecords> { key ->
+        val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
+        ChaoxingRootFlow(
+            initialRoute = key,
+            onExitToHost = { backDispatcher?.onBackPressed() },
+        )
+    }
 }
 
 private fun EntryProviderScope<NavKey>.registerChaoxingSubEntries(
     onNavigate: (ChaoxingNavKey) -> Unit,
     onBack: () -> Unit,
     onFirstAccountBound: (String) -> Unit = {},
-    includeDashboard: Boolean = true,
-    includeAccounts: Boolean = true,
 ) {
-    if (includeDashboard) {
-        entry<ChaoxingNavKey.Dashboard> {
-            val viewModel: ChaoxingDashboardViewModel = hiltViewModel()
-            ChaoxingDashboardScreen(
-                viewModel = viewModel,
-                onNavigate = onNavigate,
-                onBack = onBack,
-            )
-        }
+    entry<ChaoxingNavKey.Dashboard> {
+        val viewModel: ChaoxingDashboardViewModel = hiltViewModel()
+        ChaoxingDashboardScreen(
+            viewModel = viewModel,
+            onNavigate = onNavigate,
+            onBack = onBack,
+        )
     }
 
-    if (includeAccounts) {
-        entry<ChaoxingNavKey.Accounts> { key ->
-            val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
-            val viewModel: ChaoxingAccountsViewModel = hiltViewModel()
-            ChaoxingAccountsScreen(
-                viewModel = viewModel,
-                initialSharePayload = key.initialSharePayload,
-                onBack = { if (includeDashboard) onBack() else backDispatcher?.onBackPressed() },
-                onFirstAccountBound = onFirstAccountBound,
-            )
-        }
+    entry<ChaoxingNavKey.Accounts> { key ->
+        val viewModel: ChaoxingAccountsViewModel = hiltViewModel()
+        ChaoxingAccountsScreen(
+            viewModel = viewModel,
+            initialSharePayload = key.initialSharePayload,
+            onBack = onBack,
+            onFirstAccountBound = onFirstAccountBound,
+        )
     }
 
     entry<ChaoxingNavKey.CourseActivities> { key ->
-        val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
         val viewModel = hiltViewModel<ChaoxingActivitiesViewModel, ChaoxingActivitiesViewModel.Factory>(
             key = "cx_activities_${key.accountId}_${key.courseId}_${key.clazzId}",
             creationCallback = { factory -> factory.create(key) },
@@ -133,31 +142,30 @@ private fun EntryProviderScope<NavKey>.registerChaoxingSubEntries(
         ChaoxingActivitiesScreen(
             viewModel = viewModel,
             onOpenSignExecution = onNavigate,
-            onBack = { if (includeDashboard) onBack() else backDispatcher?.onBackPressed() },
+            onBack = onBack,
         )
     }
 
     entry<ChaoxingNavKey.SignExecution> { key ->
-        val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
         val viewModel = hiltViewModel<ChaoxingSignExecutionViewModel, ChaoxingSignExecutionViewModel.Factory>(
             key = "cx_sign_${key.accountId}_${key.activeId}",
             creationCallback = { factory -> factory.create(key) },
         )
         ChaoxingSignExecutionScreen(
             viewModel = viewModel,
-            onBack = { if (includeDashboard) onBack() else backDispatcher?.onBackPressed() },
+            onBack = onBack,
+            courseName = key.courseName,
         )
     }
 
     entry<ChaoxingNavKey.SignRecords> { key ->
-        val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
         val viewModel = hiltViewModel<ChaoxingSignRecordsViewModel, ChaoxingSignRecordsViewModel.Factory>(
             key = "cx_records_${key.accountId ?: "all"}",
             creationCallback = { factory -> factory.create(key) },
         )
         ChaoxingSignRecordsScreen(
             viewModel = viewModel,
-            onBack = { if (includeDashboard) onBack() else backDispatcher?.onBackPressed() },
+            onBack = onBack,
         )
     }
 }

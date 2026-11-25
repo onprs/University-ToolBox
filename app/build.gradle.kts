@@ -19,8 +19,8 @@ android {
     defaultConfig {
         applicationId = "io.github.onprs.universitytoolbox"
         // 遵循 MAJOR * 1000000 + MINOR * 10000 + PATCH * 100
-        versionCode = 1_010_000
-        versionName = "1.1.0"
+        versionCode = 1_010_100
+        versionName = "1.1.1"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -119,9 +119,6 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.hilt.lifecycle.viewmodel.compose)
-    implementation(libs.androidx.work.runtime.ktx)
-    implementation(libs.androidx.hilt.work)
-    ksp(libs.androidx.hilt.compiler)
     implementation(libs.androidx.profileinstaller)
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)

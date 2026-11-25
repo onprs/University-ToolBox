@@ -121,11 +121,6 @@ class ChaoxingRateLimitCoordinator(
         ),
     )
 
-    /** 在执行单次请求前获取限流令牌。 */
-    suspend fun acquirePermit() {
-        globalLimiter.acquire(1)
-    }
-
     /** 在多账号队列执行间注入随机抖动延迟并获取限流令牌。 */
     suspend fun awaitAccountTurn(
         accountIndex: Int,

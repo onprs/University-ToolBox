@@ -5,7 +5,6 @@
     <string name="feature_gpa_screen_title">学分绩点计算器</string>
     <string name="feature_gpa_tab_courses">课程计分</string>
     <string name="feature_gpa_tab_target">目标反推</string>
-    <string name="feature_gpa_scale_label">绩点算法</string>
     <string name="feature_gpa_scale_pku">北大 4.0</string>
     <string name="feature_gpa_scale_standard_40">标准 4.0</string>
     <string name="feature_gpa_scale_wes_40">WES 4.0</string>

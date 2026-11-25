@@ -61,17 +61,6 @@ object ChaoxingSharedAccountCodec {
         }
     }
 
-    /** 判断给定文本是否为学习通账号绑定深链。 */
-    fun isChaoxingBindDeepLink(rawUri: String?): Boolean {
-        val trimmed = rawUri?.trim().orEmpty()
-        if (trimmed.isEmpty()) {
-            return false
-        }
-        val uri = runCatching { URI(trimmed) }.getOrNull() ?: return false
-        return uri.scheme.equals(SCHEME_TOOLBOX, ignoreCase = true) &&
-            uri.host.equals(HOST_CHAOXING_BIND, ignoreCase = true)
-    }
-
     /**
      * 从二维码扫码内容、深链或包含链接的剪贴板文本中解析账号绑定载荷；格式不匹配时返回 null。
      */

@@ -13,7 +13,6 @@ dependencies {
     api(libs.universitytoolbox.core.license.api)
     api(libs.okhttp)
     api(libs.kotlinx.serialization.json)
-    implementation(libs.okhttp.logging)
     implementation(libs.kotlinx.coroutines.core)
 
     testImplementation(libs.junit)

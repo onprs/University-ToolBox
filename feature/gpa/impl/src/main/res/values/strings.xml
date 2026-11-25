@@ -5,7 +5,6 @@
     <string name="feature_gpa_screen_title">GPA Calculator</string>
     <string name="feature_gpa_tab_courses">Courses</string>
     <string name="feature_gpa_tab_target">Target Planner</string>
-    <string name="feature_gpa_scale_label">GPA Scale</string>
     <string name="feature_gpa_scale_pku">PKU 4.0</string>
     <string name="feature_gpa_scale_standard_40">Standard 4.0</string>
     <string name="feature_gpa_scale_wes_40">WES 4.0</string>

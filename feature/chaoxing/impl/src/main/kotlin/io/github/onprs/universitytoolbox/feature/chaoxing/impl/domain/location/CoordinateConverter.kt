@@ -106,12 +106,6 @@ object CoordinateConverter {
         return gcj02ToBd09(gcj.latitude, gcj.longitude)
     }
 
-    /** BD-09 转 WGS-84。 */
-    fun bd09ToWgs84(latitude: Double, longitude: Double): GeoPoint {
-        val gcj = bd09ToGcj02(latitude, longitude)
-        return gcj02ToWgs84(gcj.latitude, gcj.longitude)
-    }
-
     /** 计算两点间球面距离（单位：米）。 */
     fun distanceMeters(a: GeoPoint, b: GeoPoint): Double {
         val radLat1 = Math.toRadians(a.latitude)

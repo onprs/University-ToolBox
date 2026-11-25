@@ -27,8 +27,4 @@
     <string name="feature_home_detail_last_used">Last used recently</string>
     <string name="feature_home_detail_disabled_default">This tool is temporarily paused by remote governance.</string>
     <string name="feature_home_detail_back">Back to Tools</string>
-    <string name="feature_home_tier_free">Free</string>
-    <string name="feature_home_tier_standard">Standard</string>
-    <string name="feature_home_tier_pro">Pro</string>
-    <string name="feature_home_tier_full">Full</string>
 </resources>

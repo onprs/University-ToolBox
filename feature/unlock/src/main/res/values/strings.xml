@@ -26,17 +26,11 @@
     <string name="feature_unlock_reason_clock_rollback">Device clock anomaly detected. Synchronize your system time and try again.</string>
     <string name="feature_unlock_reason_revoked">This license has been revoked. Please activate a new valid key.</string>
     <string name="feature_unlock_reason_invalid_signature">License signature verification failed. Please activate a valid key.</string>
-    <string name="feature_unlock_detail_tier">Tier</string>
-    <string name="feature_unlock_detail_serial">Serial ID</string>
     <string name="feature_unlock_detail_quota">Max Sub-Accounts</string>
     <string name="feature_unlock_detail_expiry">Expires At</string>
     <string name="feature_unlock_detail_permanent">Permanent</string>
     <string name="feature_unlock_detail_scopes">Granted Scopes</string>
     <string name="feature_unlock_scope_all">All Features</string>
-    <string name="feature_unlock_tier_free">Free</string>
-    <string name="feature_unlock_tier_standard">Standard</string>
-    <string name="feature_unlock_tier_pro">Pro</string>
-    <string name="feature_unlock_tier_full">Full</string>
     <string name="feature_unlock_feedback_copied">Device code copied</string>
     <string name="feature_unlock_feedback_activated">License activated successfully</string>
     <string name="feature_unlock_feedback_empty">Please enter an activation key</string>

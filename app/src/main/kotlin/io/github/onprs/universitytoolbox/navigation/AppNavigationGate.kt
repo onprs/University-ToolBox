@@ -107,11 +107,6 @@ class AppNavigationGate @Inject constructor(
         return buildUpdate()
     }
 
-    fun openToolById(toolId: String): GateUpdate {
-        handleToolDeepLink(toolId, customEntryKey = null)
-        return buildUpdate()
-    }
-
     fun openSettings(): GateUpdate {
         if (lastLicenseState is LicenseState.Unlocked && unlockedBackStack.lastOrNull() != SettingsNavKey) {
             unlockedBackStack.add(SettingsNavKey)

@@ -16,14 +16,9 @@ data class ChaoxingEndpointConfig(
     val mloginPageUrl: String get() = "$passportBaseUrl/mlogin"
     val loginPageUrl: String get() = "$passportBaseUrl/login"
     val fanyaLoginUrl: String get() = "$passportBaseUrl/fanyalogin"
-    val fanyaLoginByCodeUrl: String get() = "$passportBaseUrl/fanyaloginbycode"
-    val unitLoginUrl: String get() = "$passportBaseUrl/unitlogin"
     val createQrUrl: String get() = "$passportBaseUrl/createqr"
-    val refreshQrUrl: String get() = "$passportBaseUrl/refreshQRCode"
     val getAuthStatusV2Url: String get() = "$passportBaseUrl/getauthstatus/v2"
-    val getAccountMessageUrl: String get() = "$passportBaseUrl/mooc/getAccountMessage"
     val searchUnisUrl: String get() = "$passportBaseUrl/org/searchUnis"
-    val orgGetNameUrl: String get() = "$passportBaseUrl/org/getName"
 
     val userLogin4UnameUrl: String get() = "$ssoBaseUrl/apis/login/userLogin4Uname.do"
     val backClazzDataUrl: String get() = "$mooc1ApiBaseUrl/mycourse/backclazzdata"
@@ -31,18 +26,14 @@ data class ChaoxingEndpointConfig(
     val courseListDataUrl: String get() = "$mooc2AnsBaseUrl/mooc2-ans/visit/courselistdata"
 
     val activeListUrl: String get() = "$mobilelearnBaseUrl/v2/apis/active/student/activelist"
-    val pcActiveListUrl: String get() = "$mobilelearnBaseUrl/widget/pcpick/stu/activeList"
     val getPptActiveInfoUrl: String get() = "$mobilelearnBaseUrl/v2/apis/active/getPPTActiveInfo"
+    val getAttendInfoUrl: String get() = "$mobilelearnBaseUrl/v2/apis/sign/getAttendInfo"
     val newSignPreSignUrl: String get() = "$mobilelearnBaseUrl/newsign/preSign"
-    val pcSignPreSignUrl: String get() = "$mobilelearnBaseUrl/widget/sign/pcStuSignController/preSign"
     val stuSignAjaxUrl: String get() = "$mobilelearnBaseUrl/pptSign/stuSignajax"
     val checkSignCodeUrl: String get() = "$mobilelearnBaseUrl/widget/sign/pcStuSignController/checkSignCode"
-    val signInV2Url: String get() = "$mobilelearnBaseUrl/v2/apis/sign/signIn"
-    val qrSignRedirectUrl: String get() = "$mobilelearnBaseUrl/widget/sign/e"
 
     val panUserValidUrl: String get() = "$panYzBaseUrl/api/token/uservalid"
     val panUploadUrl: String get() = "$panYzBaseUrl/upload"
-    val captchaConfUrl: String get() = "$captchaBaseUrl/captcha/get/conf"
 
     /** 生成用户头像地址。 */
     fun avatarUrl(uid: String, size: Int = DEFAULT_AVATAR_SIZE): String = "$photoBaseUrl/p/${uid}_$size"
@@ -66,11 +57,5 @@ data class ChaoxingEndpointConfig(
         const val MOBILE_WEB_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
-
-        val EQUIVALENT_COOKIE_DOMAINS: List<String> = listOf(
-            ".chaoxing.com",
-            ".cxwfw.com",
-            ".xuexitong.com",
-        )
     }
 }

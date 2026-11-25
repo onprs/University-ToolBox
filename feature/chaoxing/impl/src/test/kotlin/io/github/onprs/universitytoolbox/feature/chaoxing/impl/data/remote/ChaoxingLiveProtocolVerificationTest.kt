@@ -76,11 +76,15 @@ class ChaoxingLiveProtocolVerificationTest {
             assertTrue("课程活动列表请求应成功，实际: $activeRes", activeRes is AppResult.Success)
             val activities = (activeRes as AppResult.Success).data
 
-            // 仅对已结束的签到活动执行只读 getPPTActiveInfo 详情探测，绝不调用任何提交接口
+            // 仅对已结束的签到活动执行只读 getPPTActiveInfo 与 getAttendInfo 详情探测，绝不调用任何提交接口
             val safeEndedSign = activities.firstOrNull {
                 it.isSignRelated && it.activityStatus == ChaoxingActivityStatus.ENDED
             }
             if (safeEndedSign != null && inspectedDetailCount == 0) {
+                assertTrue(
+                    "已结束签到活动应通过只读 getAttendInfo 回填真实考勤状态而非 UNKNOWN",
+                    safeEndedSign.userStatus != ChaoxingUserSignStatus.UNKNOWN,
+                )
                 val detailRes = remoteDataSource.fetchActiveDetail(auth.accountId, safeEndedSign.activeId)
                 assertTrue("只读 getPPTActiveInfo 应解析成功，实际: $detailRes", detailRes is AppResult.Success)
                 assertTrue((detailRes as AppResult.Success).data.activeId == safeEndedSign.activeId)

@@ -54,7 +54,6 @@ University-ToolBox/
 ### 1.2 宿主启动与路由门禁（`AppNavigationGate`）
 
 - **`ToolboxApplication`**：
-  - 禁用 `AndroidManifest.xml` 中 `androidx.work.WorkManagerInitializer` 的默认自动初始化，改为通过 `Configuration.Provider` 按需延迟装配 `HiltWorkerFactory`。
   - 实现 Coil 3 `SingletonImageLoader.Factory`，通过 `OkHttpNetworkFetcherFactory` 延迟复用 `@RootHttpClient`。
 - **`MainActivity` 与 `AppNavigationGate`**：
   - 继承 `AppCompatActivity` 以配合 `AppCompatDelegate.setApplicationLocales` 应用内语言切换，同时支持 `installSplashScreen()` 与 `enableEdgeToEdge()`。
