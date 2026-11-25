@@ -14,6 +14,7 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinato
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.ChaoxingDashboardUiState
 import javax.inject.Inject
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -36,10 +37,14 @@ class ChaoxingDashboardViewModel @Inject constructor(
     private val isLoadingCourses = MutableStateFlow(false)
     private val errorMessage = MutableStateFlow<String?>(null)
     private val autoSyncedAccountIds = LinkedHashSet<String>()
+    private var courseSyncJob: Job? = null
+    private var syncingAccountId: String? = null
+    private var lastObservedAccountId: String? = null
 
     private val accountsFlow = accountManager.observeAccounts()
 
     init {
+        observeActiveAccountLifecycle()
         observeInitialCourseSync()
     }
 
@@ -107,8 +112,11 @@ class ChaoxingDashboardViewModel @Inject constructor(
     )
 
     fun selectAccount(accountId: String) {
-        selectedAccountId.value = accountId
+        if (syncingAccountId != null && syncingAccountId != accountId) {
+            cancelCourseSync()
+        }
         errorMessage.value = null
+        selectedAccountId.value = accountId
     }
 
     fun updateSearchQuery(query: String) {
@@ -120,8 +128,27 @@ class ChaoxingDashboardViewModel @Inject constructor(
     }
 
     fun refreshCourses() {
-        val accountId = uiState.value.selectedAccount?.accountId ?: return
+        val accountId = resolveCurrentSelectedAccountId() ?: return
         syncCoursesForAccount(accountId)
+    }
+
+    private fun observeActiveAccountLifecycle() {
+        viewModelScope.launch {
+            combine(accountsFlow, selectedAccountId) { accounts, explicitId ->
+                val validIds = accounts.mapTo(HashSet()) { it.accountId }
+                autoSyncedAccountIds.retainAll(validIds)
+                accounts.firstOrNull { it.accountId == explicitId }?.accountId
+                    ?: accounts.firstOrNull()?.accountId
+            }.distinctUntilChanged().collect { resolvedId ->
+                if (lastObservedAccountId != resolvedId) {
+                    lastObservedAccountId = resolvedId
+                    errorMessage.value = null
+                    if (syncingAccountId != null && syncingAccountId != resolvedId) {
+                        cancelCourseSync()
+                    }
+                }
+            }
+        }
     }
 
     private fun observeInitialCourseSync() {
@@ -154,18 +181,45 @@ class ChaoxingDashboardViewModel @Inject constructor(
     }
 
     private fun syncCoursesForAccount(accountId: String) {
-        if (isLoadingCourses.value) {
+        if (courseSyncJob?.isActive == true && syncingAccountId == accountId) {
             return
         }
-        viewModelScope.launch {
+        cancelCourseSync()
+        syncingAccountId = accountId
+        courseSyncJob = viewModelScope.launch {
             isLoadingCourses.value = true
             errorMessage.value = null
-            when (val res = accountManager.refreshCourses(accountId)) {
-                is AppResult.Success -> Unit
-                is AppResult.Failure -> errorMessage.value = res.error.message
+            try {
+                when (val res = accountManager.refreshCourses(accountId)) {
+                    is AppResult.Success -> Unit
+                    is AppResult.Failure -> {
+                        if (resolveCurrentSelectedAccountId() == accountId) {
+                            errorMessage.value = res.error.message
+                        }
+                    }
+                }
+            } finally {
+                if (syncingAccountId == accountId) {
+                    syncingAccountId = null
+                    isLoadingCourses.value = false
+                }
             }
-            isLoadingCourses.value = false
         }
+    }
+
+    private fun resolveCurrentSelectedAccountId(): String? =
+        uiState.value.selectedAccount?.accountId ?: lastObservedAccountId
+
+    private fun cancelCourseSync() {
+        courseSyncJob?.cancel()
+        courseSyncJob = null
+        syncingAccountId = null
+        isLoadingCourses.value = false
+    }
+
+    override fun onCleared() {
+        cancelCourseSync()
+        super.onCleared()
     }
 
     private object SimpleChaoxingTarget :

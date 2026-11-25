@@ -11,6 +11,7 @@ import io.github.onprs.universitytoolbox.core.scanner.BarcodeScanner
 import io.github.onprs.universitytoolbox.feature.chaoxing.api.CHAOXING_TOOL_ID
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingAuthRemoteDataSource
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingEndpointConfig
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingQrLoginSession
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingSchoolOption
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.AccountBindResult
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.ChaoxingAccountManager
@@ -20,6 +21,7 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.ImageByt
 import javax.inject.Inject
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,6 +58,7 @@ class ChaoxingAccountsViewModel @Inject constructor(
     private var qrPollingJob: Job? = null
     private var schoolSearchJob: Job? = null
     private var lastConsumedInitialPayload: String? = null
+    private var isForegroundActive: Boolean = true
 
     init {
         viewModelScope.launch {
@@ -98,7 +101,7 @@ class ChaoxingAccountsViewModel @Inject constructor(
             return
         }
         lastConsumedInitialPayload = trimmed
-        qrPollingJob?.cancel()
+        cancelQrPolling()
         mutableUiState.update {
             it.copy(
                 activeTab = ChaoxingLoginTab.IMPORT_SHARED,
@@ -111,10 +114,22 @@ class ChaoxingAccountsViewModel @Inject constructor(
 
     fun selectTab(tab: ChaoxingLoginTab) {
         mutableUiState.update { it.copy(activeTab = tab, feedbackMessage = null) }
-        if (tab == ChaoxingLoginTab.QR_CODE && uiState.value.qrSession == null) {
-            refreshQrSession()
-        } else if (tab != ChaoxingLoginTab.QR_CODE) {
-            qrPollingJob?.cancel()
+        if (tab == ChaoxingLoginTab.QR_CODE) {
+            ensureQrPollingIfEligible()
+        } else {
+            cancelQrPolling()
+        }
+    }
+
+    fun setForegroundActive(active: Boolean) {
+        if (isForegroundActive == active) {
+            return
+        }
+        isForegroundActive = active
+        if (!active) {
+            cancelQrPolling()
+        } else if (uiState.value.activeTab == ChaoxingLoginTab.QR_CODE) {
+            ensureQrPollingIfEligible()
         }
     }
 
@@ -247,7 +262,14 @@ class ChaoxingAccountsViewModel @Inject constructor(
 
     fun updateSchoolKeyword(keyword: String) {
         schoolSearchJob?.cancel()
-        mutableUiState.update { it.copy(schoolKeyword = keyword) }
+        schoolSearchJob = null
+        mutableUiState.update { current ->
+            val keepSelected = current.selectedSchool?.takeIf { it.name == keyword }
+            current.copy(
+                schoolKeyword = keyword,
+                selectedSchool = keepSelected,
+            )
+        }
         val trimmed = keyword.trim()
         if (trimmed.length < MIN_SCHOOL_QUERY_LEN) {
             mutableUiState.update { it.copy(schoolSuggestions = emptyList(), isSearchingSchools = false) }
@@ -269,11 +291,14 @@ class ChaoxingAccountsViewModel @Inject constructor(
     }
 
     fun selectSchool(school: ChaoxingSchoolOption?) {
+        schoolSearchJob?.cancel()
+        schoolSearchJob = null
         mutableUiState.update {
             it.copy(
                 selectedSchool = school,
                 schoolKeyword = school?.name.orEmpty(),
                 schoolSuggestions = emptyList(),
+                isSearchingSchools = false,
             )
         }
     }
@@ -304,10 +329,15 @@ class ChaoxingAccountsViewModel @Inject constructor(
     }
 
     fun refreshQrSession() {
-        qrPollingJob?.cancel()
+        cancelQrPolling()
         qrPollingJob = viewModelScope.launch {
             mutableUiState.update {
-                it.copy(qrImage = null, qrStatusText = "正在加载二维码…", feedbackMessage = null)
+                it.copy(
+                    qrSession = null,
+                    qrImage = null,
+                    qrStatusText = "正在加载二维码…",
+                    feedbackMessage = null,
+                )
             }
             val session = when (val res = accountManager.startQrLogin()) {
                 is AppResult.Success -> res.data
@@ -331,15 +361,65 @@ class ChaoxingAccountsViewModel @Inject constructor(
                     qrStatusText = "请使用学习通客户端扫码并确认登录",
                 )
             }
-            while (isActive) {
+            if (isForegroundActive && uiState.value.activeTab == ChaoxingLoginTab.QR_CODE) {
+                pollQrSessionLoop(session, pollImmediately = false)
+            }
+        }
+    }
+
+    private fun ensureQrPollingIfEligible() {
+        if (!isForegroundActive || uiState.value.activeTab != ChaoxingLoginTab.QR_CODE) {
+            return
+        }
+        val existingSession = uiState.value.qrSession
+        if (existingSession == null) {
+            refreshQrSession()
+        } else if (qrPollingJob?.isActive != true) {
+            qrPollingJob = viewModelScope.launch {
+                pollQrSessionLoop(existingSession, pollImmediately = true)
+            }
+        }
+    }
+
+    private suspend fun pollQrSessionLoop(session: ChaoxingQrLoginSession, pollImmediately: Boolean) {
+        var shouldPollImmediately = pollImmediately
+        var completed = false
+        while (!completed && currentCoroutineContext().isActive && isQrPollingAllowed()) {
+            if (!shouldPollImmediately) {
                 delay(QR_POLL_INTERVAL_MS)
+            }
+            shouldPollImmediately = false
+            if (isQrPollingAllowed()) {
                 val pollResult = accountManager.pollQrLogin(session)
                 if (pollResult != null) {
-                    applyBindResult(pollResult)
-                    break
+                    handleQrPollTerminalResult(pollResult)
+                    completed = true
                 }
             }
         }
+    }
+
+    private fun isQrPollingAllowed(): Boolean =
+        isForegroundActive && uiState.value.activeTab == ChaoxingLoginTab.QR_CODE
+
+    private fun handleQrPollTerminalResult(result: AccountBindResult) {
+        when (result) {
+            is AccountBindResult.InvalidCredentials -> mutableUiState.update {
+                it.copy(qrSession = null, qrImage = null, qrStatusText = result.message)
+            }
+
+            is AccountBindResult.Failed -> mutableUiState.update {
+                it.copy(qrSession = null, qrStatusText = result.error.message)
+            }
+
+            else -> Unit
+        }
+        applyBindResult(result)
+    }
+
+    private fun cancelQrPolling() {
+        qrPollingJob?.cancel()
+        qrPollingJob = null
     }
 
     fun toggleAccountEnabled(accountId: String, enabled: Boolean) {

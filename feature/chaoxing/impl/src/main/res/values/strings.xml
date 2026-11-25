@@ -9,11 +9,17 @@
     <string name="chaoxing_add_account">Bind Account</string>
     <string name="chaoxing_refresh">Refresh</string>
     <string name="chaoxing_search_courses_hint">Search courses or teachers</string>
+    <string name="chaoxing_clear_search">Clear search</string>
     <string name="chaoxing_show_archived">Show archived courses</string>
+    <string name="chaoxing_loading_courses">Syncing enrolled courses…</string>
     <string name="chaoxing_empty_accounts_title">No linked accounts yet</string>
     <string name="chaoxing_empty_accounts_desc">Add a primary account to browse courses and monitor active check-ins.</string>
     <string name="chaoxing_empty_courses_title">No courses available</string>
     <string name="chaoxing_empty_courses_desc">Pull or tap refresh to sync your enrolled courses.</string>
+    <string name="chaoxing_no_matching_courses_title">No matching courses</string>
+    <string name="chaoxing_no_matching_courses_desc">No courses match the current keyword. Clear search to view all courses.</string>
+    <string name="chaoxing_only_archived_courses_title">No active courses</string>
+    <string name="chaoxing_only_archived_courses_desc">All courses under this account are archived. Enable archived view to browse them.</string>
     <string name="chaoxing_empty_activities_title">No activities yet</string>
     <string name="chaoxing_empty_activities_desc">Tap refresh or enable automatic monitoring to detect active check-ins.</string>
     <string name="chaoxing_empty_records_title">No check-in records</string>

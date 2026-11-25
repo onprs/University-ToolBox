@@ -9,11 +9,17 @@
     <string name="chaoxing_add_account">绑定账号</string>
     <string name="chaoxing_refresh">刷新</string>
     <string name="chaoxing_search_courses_hint">搜索课程名称或授课教师</string>
+    <string name="chaoxing_clear_search">清空搜索</string>
     <string name="chaoxing_show_archived">显示已结课课程</string>
+    <string name="chaoxing_loading_courses">正在同步课程列表…</string>
     <string name="chaoxing_empty_accounts_title">尚未绑定学习通账号</string>
     <string name="chaoxing_empty_accounts_desc">请先绑定主账号以同步课程列表并监测课堂签到活动。</string>
     <string name="chaoxing_empty_courses_title">暂无课程数据</string>
     <string name="chaoxing_empty_courses_desc">点击右上角刷新按钮同步当前账号的课程列表。</string>
+    <string name="chaoxing_no_matching_courses_title">未找到匹配的课程</string>
+    <string name="chaoxing_no_matching_courses_desc">没有与当前关键词匹配的课程，可清空搜索后重新查看。</string>
+    <string name="chaoxing_only_archived_courses_title">暂无进行中课程</string>
+    <string name="chaoxing_only_archived_courses_desc">当前账号下的课程均已结课，开启显示已结课课程后即可查看。</string>
     <string name="chaoxing_empty_activities_title">暂无活动记录</string>
     <string name="chaoxing_empty_activities_desc">点击刷新或开启自动监测以第一时间发现新签到。</string>
     <string name="chaoxing_empty_records_title">暂无签到记录</string>

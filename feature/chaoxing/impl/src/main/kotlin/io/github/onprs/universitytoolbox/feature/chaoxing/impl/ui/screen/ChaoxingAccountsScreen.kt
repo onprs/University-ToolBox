@@ -13,16 +13,21 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material.icons.outlined.PhonelinkSetup
@@ -33,6 +38,7 @@ import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -54,17 +60,24 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.SubcomposeAsyncImage
 import coil3.compose.SubcomposeAsyncImageContent
@@ -93,7 +106,15 @@ fun ChaoxingAccountsScreen(
     onFirstAccountBound: (String) -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var pendingDeleteAccount by remember { mutableStateOf<ChaoxingAccountEntity?>(null) }
+    var pendingDeleteAccountId by rememberSaveable { mutableStateOf<String?>(null) }
+    val pendingDeleteAccount = state.accounts.firstOrNull { it.accountId == pendingDeleteAccountId }
+
+    LifecycleStartEffect(viewModel) {
+        viewModel.setForegroundActive(true)
+        onStopOrDispose {
+            viewModel.setForegroundActive(false)
+        }
+    }
 
     LaunchedEffect(initialSharePayload) {
         if (!initialSharePayload.isNullOrBlank()) {
@@ -113,7 +134,7 @@ fun ChaoxingAccountsScreen(
         state = state,
         viewModel = viewModel,
         pendingDeleteAccount = pendingDeleteAccount,
-        onDismissDelete = { pendingDeleteAccount = null },
+        onDismissDelete = { pendingDeleteAccountId = null },
     )
 
     Scaffold(
@@ -127,10 +148,12 @@ fun ChaoxingAccountsScreen(
         AccountsContentList(
             state = state,
             viewModel = viewModel,
-            onRequestDelete = { pendingDeleteAccount = it },
+            onRequestDelete = { pendingDeleteAccountId = it.accountId },
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
+                .imePadding(),
         )
     }
 }
@@ -171,6 +194,7 @@ private fun AccountsDialogsHost(
     pendingDeleteAccount?.let { target ->
         UnbindAccountConfirmDialog(
             target = target,
+            hasOtherAccounts = state.accounts.size > 1,
             onConfirm = {
                 viewModel.removeAccount(target.accountId)
                 onDismissDelete()
@@ -226,7 +250,7 @@ private fun AccountsContentList(
             item {
                 ToolboxSectionHeader(
                     title = "已绑定账号",
-                    subtitle = "开启参与开关后将在多账号签到中按限流队列依次执行",
+                    subtitle = "开启开关的账号将自动参与多账号批量签到",
                 )
             }
             items(state.accounts, key = { it.accountId }) { account ->
@@ -262,13 +286,28 @@ private fun AccountsContentList(
 }
 
 @Composable
-private fun UnbindAccountConfirmDialog(target: ChaoxingAccountEntity, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+private fun UnbindAccountConfirmDialog(
+    target: ChaoxingAccountEntity,
+    hasOtherAccounts: Boolean = false,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val message = if (target.isPrimary && hasOtherAccounts) {
+        "确定移除主账号 ${target.displayName}（${target.maskedAccount}）及其本地缓存会话与课程吗？移除后将自动把下一账号设为主账号。"
+    } else {
+        "确定移除 ${target.displayName}（${target.maskedAccount}）及其本地缓存会话与课程吗？"
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(text = "解绑账号") },
-        text = { Text(text = "确定移除 ${target.displayName}（${target.maskedAccount}）及其本地缓存会话吗？") },
+        text = { Text(text = message) },
         confirmButton = {
-            TextButton(onClick = onConfirm) { Text(text = "解绑") }
+            TextButton(
+                onClick = onConfirm,
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+            ) {
+                Text(text = "确认解绑")
+            }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text(text = "取消") }
@@ -426,6 +465,12 @@ private fun BoundAccountActionsRow(
 
 @Composable
 private fun BindAccountPanel(state: ChaoxingAccountsUiState, viewModel: ChaoxingAccountsViewModel) {
+    val focusManager = LocalFocusManager.current
+    val selectLoginTab: (ChaoxingLoginTab) -> Unit = { tab ->
+        focusManager.clearFocus()
+        viewModel.selectTab(tab)
+    }
+
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(ToolboxSpacing.medium),
@@ -434,17 +479,17 @@ private fun BindAccountPanel(state: ChaoxingAccountsUiState, viewModel: Chaoxing
             PrimaryTabRow(selectedTabIndex = state.activeTab.ordinal) {
                 Tab(
                     selected = state.activeTab == ChaoxingLoginTab.PASSWORD,
-                    onClick = { viewModel.selectTab(ChaoxingLoginTab.PASSWORD) },
+                    onClick = { selectLoginTab(ChaoxingLoginTab.PASSWORD) },
                     text = { Text(text = "密码登录") },
                 )
                 Tab(
                     selected = state.activeTab == ChaoxingLoginTab.QR_CODE,
-                    onClick = { viewModel.selectTab(ChaoxingLoginTab.QR_CODE) },
+                    onClick = { selectLoginTab(ChaoxingLoginTab.QR_CODE) },
                     text = { Text(text = "学习通扫码") },
                 )
                 Tab(
                     selected = state.activeTab == ChaoxingLoginTab.IMPORT_SHARED,
-                    onClick = { viewModel.selectTab(ChaoxingLoginTab.IMPORT_SHARED) },
+                    onClick = { selectLoginTab(ChaoxingLoginTab.IMPORT_SHARED) },
                     text = { Text(text = "绑定导入") },
                 )
             }
@@ -494,11 +539,21 @@ private fun FeedbackBanner(message: String?, isError: Boolean) {
 @Composable
 private fun ImportSharedAccountForm(state: ChaoxingAccountsUiState, viewModel: ChaoxingAccountsViewModel) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val captchaFocusRequester = remember { FocusRequester() }
+    val hasCaptchaField = !state.captchaPromptMessage.isNullOrBlank()
+    val canSubmit = !state.isSubmittingLogin && state.importShareInput.isNotBlank()
     val galleryPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
         if (uri != null) {
             viewModel.scanImportQrFromUri(uri)
+        }
+    }
+    val submitImport: () -> Unit = {
+        focusManager.clearFocus()
+        if (canSubmit) {
+            viewModel.submitSharedImport()
         }
     }
 
@@ -508,55 +563,41 @@ private fun ImportSharedAccountForm(state: ChaoxingAccountsUiState, viewModel: C
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small)) {
-            FilledTonalButton(
-                onClick = { viewModel.setImportScannerOpen(true) },
-                modifier = Modifier.weight(1f),
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.QrCodeScanner,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(text = " 相机扫码")
-            }
-            FilledTonalButton(
-                onClick = {
-                    galleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                },
-                modifier = Modifier.weight(1f),
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.PhotoLibrary,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Text(text = " 相册识图")
-            }
-        }
-        OutlinedTextField(
+        ImportScannerActionRow(
+            onOpenCameraScanner = {
+                focusManager.clearFocus()
+                viewModel.setImportScannerOpen(true)
+            },
+            onOpenGalleryPicker = {
+                focusManager.clearFocus()
+                galleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            },
+        )
+        ImportShareLinkTextField(
             value = state.importShareInput,
+            hasCaptchaField = hasCaptchaField,
             onValueChange = viewModel::updateImportShareInput,
-            label = { Text(text = "账号绑定链接") },
-            singleLine = true,
-            trailingIcon = {
-                TextButton(
-                    onClick = {
-                        val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip
-                        val text = clip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
-                        if (text.isNotBlank()) {
-                            viewModel.updateImportShareInput(text)
-                        }
-                    },
-                ) {
-                    Text(text = "粘贴")
+            onPasteFromClipboard = {
+                val clip = context.getSystemService(ClipboardManager::class.java)?.primaryClip
+                val text = clip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                if (text.isNotBlank()) {
+                    viewModel.updateImportShareInput(text)
                 }
             },
-            modifier = Modifier.fillMaxWidth(),
+            onNext = { captchaFocusRequester.requestFocus() },
+            onDone = submitImport,
         )
+        if (hasCaptchaField) {
+            CaptchaValidateTextField(
+                value = state.captchaValidateInput,
+                onValueChange = viewModel::updateCaptchaValidate,
+                focusRequester = captchaFocusRequester,
+                onDone = submitImport,
+            )
+        }
         Button(
-            onClick = { viewModel.submitSharedImport() },
-            enabled = !state.isSubmittingLogin && state.importShareInput.isNotBlank(),
+            onClick = submitImport,
+            enabled = canSubmit,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(text = "导入并绑定设备码")
@@ -565,62 +606,256 @@ private fun ImportSharedAccountForm(state: ChaoxingAccountsUiState, viewModel: C
 }
 
 @Composable
+private fun ImportScannerActionRow(onOpenCameraScanner: () -> Unit, onOpenGalleryPicker: () -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small)) {
+        FilledTonalButton(
+            onClick = onOpenCameraScanner,
+            modifier = Modifier.weight(1f),
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.QrCodeScanner,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(text = " 相机扫码")
+        }
+        FilledTonalButton(
+            onClick = onOpenGalleryPicker,
+            modifier = Modifier.weight(1f),
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.PhotoLibrary,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(text = " 相册识图")
+        }
+    }
+}
+
+@Composable
+private fun ImportShareLinkTextField(
+    value: String,
+    hasCaptchaField: Boolean,
+    onValueChange: (String) -> Unit,
+    onPasteFromClipboard: () -> Unit,
+    onNext: () -> Unit,
+    onDone: () -> Unit,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(text = "账号绑定链接") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Uri,
+            autoCorrectEnabled = false,
+            imeAction = if (hasCaptchaField) ImeAction.Next else ImeAction.Done,
+        ),
+        keyboardActions = KeyboardActions(
+            onNext = { onNext() },
+            onDone = { onDone() },
+        ),
+        trailingIcon = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (value.isNotEmpty()) {
+                    IconButton(onClick = { onValueChange("") }) {
+                        Icon(imageVector = Icons.Outlined.Close, contentDescription = "清空链接")
+                    }
+                }
+                TextButton(onClick = onPasteFromClipboard) {
+                    Text(text = "粘贴")
+                }
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+@Composable
 private fun PasswordLoginForm(state: ChaoxingAccountsUiState, viewModel: ChaoxingAccountsViewModel) {
+    val focusManager = LocalFocusManager.current
+    val accountFocusRequester = remember { FocusRequester() }
+    val passwordFocusRequester = remember { FocusRequester() }
+    val captchaFocusRequester = remember { FocusRequester() }
     var showPassword by remember { mutableStateOf(false) }
 
+    val hasCaptchaField = !state.captchaPromptMessage.isNullOrBlank()
+    val canSubmit = !state.isSubmittingLogin && state.accountInput.isNotBlank() && state.passwordInput.isNotBlank()
+    val submitLogin: () -> Unit = {
+        focusManager.clearFocus()
+        if (canSubmit) {
+            viewModel.submitPasswordLogin()
+        }
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.small)) {
-        OutlinedTextField(
-            value = state.schoolKeyword,
-            onValueChange = viewModel::updateSchoolKeyword,
-            label = { Text(text = "学校/机构（手机号通用登录可留空）") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        SchoolSuggestionsList(
+        SchoolSelectionSection(
+            schoolKeyword = state.schoolKeyword,
+            selectedSchool = state.selectedSchool,
             suggestions = state.schoolSuggestions,
-            selected = state.selectedSchool,
-            onSelect = viewModel::selectSchool,
-        )
-        OutlinedTextField(
-            value = state.accountInput,
-            onValueChange = viewModel::updateAccountInput,
-            label = { Text(text = if (state.selectedSchool == null) "手机号 / 超星号 / 邮箱" else "学号 / 工号") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = state.passwordInput,
-            onValueChange = viewModel::updatePasswordInput,
-            label = { Text(text = "登录密码") },
-            singleLine = true,
-            visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-            trailingIcon = {
-                IconButton(onClick = { showPassword = !showPassword }) {
-                    Icon(
-                        imageVector = if (showPassword) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                        contentDescription = null,
-                    )
+            onKeywordChange = viewModel::updateSchoolKeyword,
+            onSelectSchool = { option ->
+                viewModel.selectSchool(option)
+                if (option != null) {
+                    accountFocusRequester.requestFocus()
                 }
             },
-            modifier = Modifier.fillMaxWidth(),
+            onAdvanceToAccount = { accountFocusRequester.requestFocus() },
         )
-        if (!state.captchaPromptMessage.isNullOrBlank()) {
-            OutlinedTextField(
+        AccountLoginCredentialsFields(
+            accountInput = state.accountInput,
+            passwordInput = state.passwordInput,
+            isSchoolLogin = state.selectedSchool != null,
+            showPassword = showPassword,
+            hasCaptchaField = hasCaptchaField,
+            accountFocusRequester = accountFocusRequester,
+            passwordFocusRequester = passwordFocusRequester,
+            onAccountChange = viewModel::updateAccountInput,
+            onPasswordChange = viewModel::updatePasswordInput,
+            onToggleShowPassword = { showPassword = !showPassword },
+            onAdvanceToCaptcha = { captchaFocusRequester.requestFocus() },
+            onSubmit = submitLogin,
+        )
+        if (hasCaptchaField) {
+            CaptchaValidateTextField(
                 value = state.captchaValidateInput,
                 onValueChange = viewModel::updateCaptchaValidate,
-                label = { Text(text = "行为验证码校验凭据") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                focusRequester = captchaFocusRequester,
+                onDone = submitLogin,
             )
         }
         Button(
-            onClick = viewModel::submitPasswordLogin,
-            enabled = !state.isSubmittingLogin && state.accountInput.isNotBlank() && state.passwordInput.isNotBlank(),
+            onClick = submitLogin,
+            enabled = canSubmit,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(text = "安全登录并加密保存")
         }
     }
+}
+
+@Composable
+private fun SchoolSelectionSection(
+    schoolKeyword: String,
+    selectedSchool: ChaoxingSchoolOption?,
+    suggestions: List<ChaoxingSchoolOption>,
+    onKeywordChange: (String) -> Unit,
+    onSelectSchool: (ChaoxingSchoolOption?) -> Unit,
+    onAdvanceToAccount: () -> Unit,
+) {
+    OutlinedTextField(
+        value = schoolKeyword,
+        onValueChange = onKeywordChange,
+        label = { Text(text = "学校/机构（手机号通用登录可留空）") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+        keyboardActions = KeyboardActions(onNext = { onAdvanceToAccount() }),
+        trailingIcon = {
+            if (schoolKeyword.isNotEmpty() || selectedSchool != null) {
+                IconButton(onClick = { onSelectSchool(null) }) {
+                    Icon(imageVector = Icons.Outlined.Close, contentDescription = "清除所选学校")
+                }
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    SchoolSuggestionsList(
+        suggestions = suggestions,
+        selected = selectedSchool,
+        onSelect = onSelectSchool,
+    )
+}
+
+@Suppress("LongParameterList")
+@Composable
+private fun AccountLoginCredentialsFields(
+    accountInput: String,
+    passwordInput: String,
+    isSchoolLogin: Boolean,
+    showPassword: Boolean,
+    hasCaptchaField: Boolean,
+    accountFocusRequester: FocusRequester,
+    passwordFocusRequester: FocusRequester,
+    onAccountChange: (String) -> Unit,
+    onPasswordChange: (String) -> Unit,
+    onToggleShowPassword: () -> Unit,
+    onAdvanceToCaptcha: () -> Unit,
+    onSubmit: () -> Unit,
+) {
+    OutlinedTextField(
+        value = accountInput,
+        onValueChange = onAccountChange,
+        label = { Text(text = if (!isSchoolLogin) "手机号 / 超星号 / 邮箱" else "学号 / 工号") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = if (!isSchoolLogin) KeyboardType.Email else KeyboardType.Ascii,
+            autoCorrectEnabled = false,
+            imeAction = ImeAction.Next,
+        ),
+        keyboardActions = KeyboardActions(onNext = { passwordFocusRequester.requestFocus() }),
+        trailingIcon = {
+            if (accountInput.isNotEmpty()) {
+                IconButton(onClick = { onAccountChange("") }) {
+                    Icon(imageVector = Icons.Outlined.Close, contentDescription = "清空账号")
+                }
+            }
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusRequester(accountFocusRequester),
+    )
+    OutlinedTextField(
+        value = passwordInput,
+        onValueChange = onPasswordChange,
+        label = { Text(text = "登录密码") },
+        singleLine = true,
+        visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Password,
+            autoCorrectEnabled = false,
+            imeAction = if (hasCaptchaField) ImeAction.Next else ImeAction.Done,
+        ),
+        keyboardActions = KeyboardActions(
+            onNext = { onAdvanceToCaptcha() },
+            onDone = { onSubmit() },
+        ),
+        trailingIcon = {
+            IconButton(onClick = onToggleShowPassword) {
+                Icon(
+                    imageVector = if (showPassword) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                    contentDescription = if (showPassword) "隐藏密码" else "显示密码",
+                )
+            }
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusRequester(passwordFocusRequester),
+    )
+}
+
+@Composable
+private fun CaptchaValidateTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    focusRequester: FocusRequester,
+    onDone: () -> Unit,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(text = "安全验证凭据") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Ascii,
+            autoCorrectEnabled = false,
+            imeAction = ImeAction.Done,
+        ),
+        keyboardActions = KeyboardActions(onDone = { onDone() }),
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusRequester(focusRequester),
+    )
 }
 
 @Composable

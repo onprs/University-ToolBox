@@ -7,14 +7,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -48,6 +51,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -62,6 +66,7 @@ import io.github.onprs.universitytoolbox.core.license.api.AccessDecision
 import io.github.onprs.universitytoolbox.core.license.api.LicenseTier
 import io.github.onprs.universitytoolbox.core.ui.DevStubBanner
 import io.github.onprs.universitytoolbox.core.ui.EmptyStateView
+import io.github.onprs.universitytoolbox.core.ui.LoadingStateView
 import io.github.onprs.universitytoolbox.core.ui.LockedToolCard
 import io.github.onprs.universitytoolbox.feature.chaoxing.api.ChaoxingNavKey
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.R
@@ -79,13 +84,19 @@ fun ChaoxingDashboardScreen(
     onBack: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val focusManager = LocalFocusManager.current
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(text = stringResource(R.string.chaoxing_dashboard_title)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onBack()
+                        },
+                    ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
                             contentDescription = stringResource(R.string.chaoxing_back),
@@ -93,20 +104,35 @@ fun ChaoxingDashboardScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { onNavigate(ChaoxingNavKey.SignRecords()) }) {
+                    IconButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onNavigate(ChaoxingNavKey.SignRecords())
+                        },
+                    ) {
                         Icon(
                             imageVector = Icons.Outlined.History,
                             contentDescription = stringResource(R.string.chaoxing_records_title),
                         )
                     }
-                    IconButton(onClick = { onNavigate(ChaoxingNavKey.Accounts()) }) {
+                    IconButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onNavigate(ChaoxingNavKey.Accounts())
+                        },
+                    ) {
                         Icon(
                             imageVector = Icons.Outlined.ManageAccounts,
                             contentDescription = stringResource(R.string.chaoxing_accounts_title),
                         )
                     }
                     if (state.selectedAccount != null && state.accessDecision is AccessDecision.Granted) {
-                        IconButton(onClick = viewModel::refreshCourses) {
+                        IconButton(
+                            onClick = {
+                                focusManager.clearFocus()
+                                viewModel.refreshCourses()
+                            },
+                        ) {
                             Icon(
                                 imageVector = Icons.Outlined.Refresh,
                                 contentDescription = stringResource(R.string.chaoxing_refresh),
@@ -121,8 +147,13 @@ fun ChaoxingDashboardScreen(
             state = state,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
-            onSelectAccount = viewModel::selectAccount,
+                .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
+                .imePadding(),
+            onSelectAccount = { accountId ->
+                focusManager.clearFocus()
+                viewModel.selectAccount(accountId)
+            },
             onSearchChange = viewModel::updateSearchQuery,
             onToggleArchived = viewModel::toggleShowArchived,
             onRefreshCourses = viewModel::refreshCourses,
@@ -188,8 +219,9 @@ private fun DashboardBody(
         )
 
         CourseListSection(
-            courses = state.filteredCourses,
-            selectedAccount = state.selectedAccount,
+            state = state,
+            onSearchChange = onSearchChange,
+            onToggleArchived = onToggleArchived,
             onRefreshCourses = onRefreshCourses,
             onNavigate = onNavigate,
         )
@@ -249,7 +281,10 @@ private fun CourseFilterHeader(
                             focusManager.clearFocus()
                         },
                     ) {
-                        Icon(imageVector = Icons.Outlined.Close, contentDescription = null)
+                        Icon(
+                            imageVector = Icons.Outlined.Close,
+                            contentDescription = stringResource(R.string.chaoxing_clear_search),
+                        )
                     }
                 }
             },
@@ -259,10 +294,18 @@ private fun CourseFilterHeader(
             modifier = Modifier.fillMaxWidth(),
         )
         Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(ToolboxRadius.chip))
+                .toggleable(
+                    value = showArchived,
+                    role = Role.Checkbox,
+                    onValueChange = onToggleArchived,
+                )
+                .padding(vertical = ToolboxSpacing.extraSmall),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.extraSmall),
+            horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
         ) {
-            Checkbox(checked = showArchived, onCheckedChange = onToggleArchived)
+            Checkbox(checked = showArchived, onCheckedChange = null)
             Text(
                 text = stringResource(R.string.chaoxing_show_archived),
                 style = MaterialTheme.typography.bodySmall,
@@ -287,21 +330,26 @@ private fun CourseFilterHeader(
 
 @Composable
 private fun CourseListSection(
-    courses: List<ChaoxingCourseEntity>,
-    selectedAccount: ChaoxingAccountEntity?,
+    state: ChaoxingDashboardUiState,
+    onSearchChange: (String) -> Unit,
+    onToggleArchived: (Boolean) -> Unit,
     onRefreshCourses: () -> Unit,
     onNavigate: (ChaoxingNavKey) -> Unit,
 ) {
-    if (courses.isEmpty()) {
-        EmptyStateView(
-            title = stringResource(R.string.chaoxing_empty_courses_title),
-            description = stringResource(R.string.chaoxing_empty_courses_desc),
-            actionLabel = stringResource(R.string.chaoxing_refresh),
-            onAction = onRefreshCourses,
+    val focusManager = LocalFocusManager.current
+    val filtered = state.filteredCourses
+    if (filtered.isEmpty()) {
+        CourseEmptyOrLoadingContent(
+            state = state,
+            onClearSearch = {
+                onSearchChange("")
+                focusManager.clearFocus()
+            },
+            onEnableArchived = { onToggleArchived(true) },
+            onRefreshCourses = onRefreshCourses,
         )
         return
     }
-    val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
     LaunchedEffect(listState.isScrollInProgress) {
         if (listState.isScrollInProgress) focusManager.clearFocus()
@@ -311,12 +359,12 @@ private fun CourseListSection(
         contentPadding = PaddingValues(ToolboxSpacing.medium),
         verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.mediumSmall),
     ) {
-        items(courses, key = { "${it.accountId}_${it.courseId}_${it.clazzId}" }) { course ->
+        items(filtered, key = { "${it.accountId}_${it.courseId}_${it.clazzId}" }) { course ->
             CourseCard(
                 course = course,
                 onClick = {
                     focusManager.clearFocus()
-                    val accountId = selectedAccount?.accountId ?: course.accountId
+                    val accountId = state.selectedAccount?.accountId ?: course.accountId
                     onNavigate(
                         ChaoxingNavKey.CourseActivities(
                             accountId = accountId,
@@ -327,6 +375,47 @@ private fun CourseListSection(
                         ),
                     )
                 },
+            )
+        }
+    }
+}
+
+@Composable
+private fun CourseEmptyOrLoadingContent(
+    state: ChaoxingDashboardUiState,
+    onClearSearch: () -> Unit,
+    onEnableArchived: () -> Unit,
+    onRefreshCourses: () -> Unit,
+) {
+    when {
+        state.isLoadingCourses && state.courses.isEmpty() -> {
+            LoadingStateView(message = stringResource(R.string.chaoxing_loading_courses))
+        }
+
+        state.courses.isNotEmpty() && state.searchQuery.isNotBlank() -> {
+            EmptyStateView(
+                title = stringResource(R.string.chaoxing_no_matching_courses_title),
+                description = stringResource(R.string.chaoxing_no_matching_courses_desc),
+                actionLabel = stringResource(R.string.chaoxing_clear_search),
+                onAction = onClearSearch,
+            )
+        }
+
+        state.courses.isNotEmpty() && !state.showArchived -> {
+            EmptyStateView(
+                title = stringResource(R.string.chaoxing_only_archived_courses_title),
+                description = stringResource(R.string.chaoxing_only_archived_courses_desc),
+                actionLabel = stringResource(R.string.chaoxing_show_archived),
+                onAction = onEnableArchived,
+            )
+        }
+
+        else -> {
+            EmptyStateView(
+                title = stringResource(R.string.chaoxing_empty_courses_title),
+                description = stringResource(R.string.chaoxing_empty_courses_desc),
+                actionLabel = stringResource(R.string.chaoxing_refresh),
+                onAction = onRefreshCourses,
             )
         }
     }

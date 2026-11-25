@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -14,6 +15,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -26,7 +28,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,20 +46,21 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.viewmodel.Chao
 @Composable
 fun ChaoxingSignRecordsScreen(viewModel: ChaoxingSignRecordsViewModel, onBack: () -> Unit) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var showClearConfirm by remember { mutableStateOf(false) }
+    var showClearConfirm by rememberSaveable { mutableStateOf(false) }
 
     if (showClearConfirm) {
         AlertDialog(
             onDismissRequest = { showClearConfirm = false },
             title = { Text(text = "清空签到记录") },
-            text = { Text(text = "确定清空本地保存的所有学习通签到执行记录吗？") },
+            text = { Text(text = "确定清空本地保存的所有学习通签到执行记录吗？清空后无法恢复。") },
             confirmButton = {
                 TextButton(
                     onClick = {
                         viewModel.clearAllRecords()
                         showClearConfirm = false
                     },
-                ) { Text(text = "清空") }
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text(text = "确认清空") }
             },
             dismissButton = {
                 TextButton(onClick = { showClearConfirm = false }) { Text(text = "取消") }
@@ -94,7 +97,8 @@ fun ChaoxingSignRecordsScreen(viewModel: ChaoxingSignRecordsViewModel, onBack: (
                 icon = Icons.Outlined.History,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(innerPadding),
+                    .padding(innerPadding)
+                    .consumeWindowInsets(innerPadding),
             )
             return@Scaffold
         }
@@ -102,7 +106,8 @@ fun ChaoxingSignRecordsScreen(viewModel: ChaoxingSignRecordsViewModel, onBack: (
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(innerPadding)
+                .consumeWindowInsets(innerPadding),
             contentPadding = PaddingValues(ToolboxSpacing.medium),
             verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.mediumSmall),
         ) {
@@ -127,7 +132,7 @@ private fun SignRecordCard(record: ChaoxingSignRecordEntity) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = record.activityTitle.ifBlank { "课堂签到 #${record.activeId}" },
+                    text = record.activityTitle.ifBlank { "课堂签到" },
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.weight(1f),
                 )

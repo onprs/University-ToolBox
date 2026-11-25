@@ -4,12 +4,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -30,8 +32,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxLinearProgressBar
 import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxStatusBadge
@@ -56,6 +61,13 @@ fun ChaoxingActivitiesScreen(
     onBack: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LifecycleStartEffect(viewModel) {
+        viewModel.setForegroundActive(true)
+        onStopOrDispose {
+            viewModel.setForegroundActive(false)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -90,7 +102,8 @@ fun ChaoxingActivitiesScreen(
             state = state,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(innerPadding)
+                .consumeWindowInsets(innerPadding),
             onFilterChange = viewModel::setFilter,
             onAutoMonitorToggle = viewModel::toggleAutoMonitor,
             onRefresh = viewModel::refresh,
@@ -184,11 +197,19 @@ private fun ActivitiesControlBar(
         verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(ToolboxRadius.chip))
+                .toggleable(
+                    value = isAutoMonitorEnabled,
+                    role = Role.Switch,
+                    onValueChange = onAutoMonitorToggle,
+                )
+                .padding(vertical = ToolboxSpacing.extraSmall),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(text = "自动轮询监测", style = MaterialTheme.typography.titleSmall)
                 val hint = lastUpdatedAtMs?.let { "上次更新：${formatTimestamp(it)}" } ?: "每 10 秒检查一次进行中签到"
                 Text(
@@ -197,7 +218,7 @@ private fun ActivitiesControlBar(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Switch(checked = isAutoMonitorEnabled, onCheckedChange = onAutoMonitorToggle)
+            Switch(checked = isAutoMonitorEnabled, onCheckedChange = null)
         }
 
         LazyRow(horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small)) {

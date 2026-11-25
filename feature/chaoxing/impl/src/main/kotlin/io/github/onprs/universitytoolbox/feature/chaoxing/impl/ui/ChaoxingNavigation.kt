@@ -1,9 +1,15 @@
 package io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.viewmodel.navigation3.rememberViewModelStoreNavEntryDecorator
 import androidx.navigation3.runtime.EntryProviderScope
@@ -22,31 +28,66 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.viewmodel.Chao
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.viewmodel.ChaoxingDashboardViewModel
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.viewmodel.ChaoxingSignExecutionViewModel
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.viewmodel.ChaoxingSignRecordsViewModel
+import kotlinx.serialization.json.Json
 
 /**
  * 学习通业务内部自包含 Navigation 3 子路由容器，支持与宿主单栈或独立深链并存。
  */
 @Composable
 fun ChaoxingRootFlow(initialRoute: ChaoxingNavKey = ChaoxingNavKey.Dashboard, onExitToHost: () -> Unit) {
-    val subBackStack = remember(initialRoute) { mutableStateListOf<NavKey>(initialRoute) }
-    val popSubRoute: () -> Unit = {
-        if (subBackStack.size > 1) {
-            subBackStack.removeAt(subBackStack.lastIndex)
-        } else {
-            onExitToHost()
-        }
+    ChaoxingSubNavigationContainer(
+        initialRoute = initialRoute,
+        onExitToHost = onExitToHost,
+    ) { onNavigate, onBack, onFirstAccountBound ->
+        registerChaoxingSubEntries(
+            onNavigate = onNavigate,
+            onBack = onBack,
+            onFirstAccountBound = onFirstAccountBound,
+        )
     }
-    val navigateToDashboard: () -> Unit = {
-        val dashboardIndex = subBackStack.indexOfFirst { it is ChaoxingNavKey.Dashboard }
-        if (dashboardIndex >= 0) {
-            while (subBackStack.lastIndex > dashboardIndex) {
+}
+
+/**
+ * 学习通子路由栈核心调度容器：负责横竖屏配置变更恢复、系统返回手势拦截与重复入栈去重。
+ */
+@Composable
+internal fun ChaoxingSubNavigationContainer(
+    initialRoute: ChaoxingNavKey,
+    onExitToHost: () -> Unit,
+    registerEntries: EntryProviderScope<NavKey>.(
+        onNavigate: (ChaoxingNavKey) -> Unit,
+        onBack: () -> Unit,
+        onFirstAccountBound: (String) -> Unit,
+    ) -> Unit,
+) {
+    val currentOnExitToHost by rememberUpdatedState(onExitToHost)
+    val subBackStack = rememberSaveable(initialRoute, saver = chaoxingSubBackStackSaver()) {
+        mutableStateListOf<NavKey>(initialRoute)
+    }
+    val popSubRoute = remember(subBackStack) {
+        {
+            if (subBackStack.size > 1) {
                 subBackStack.removeAt(subBackStack.lastIndex)
+                Unit
+            } else {
+                currentOnExitToHost()
             }
-        } else {
-            subBackStack.clear()
-            subBackStack += ChaoxingNavKey.Dashboard
         }
     }
+    val provider = remember(subBackStack, registerEntries) {
+        entryProvider {
+            registerEntries(
+                { target -> subBackStack.pushChaoxingRoute(target) },
+                popSubRoute,
+                { subBackStack.popOrResetToDashboard() },
+            )
+        }
+    }
+
+    // 在 NavDisplay 之前注册子路由级返回拦截：
+    // 优先级高于外层宿主路由（防止二级/三级页面侧滑返回直接退出整个学习通模块），
+    // 同时低于子页面内部覆盖层（如全屏地图选点或弹窗）注册的 BackHandler。
+    BackHandler(enabled = subBackStack.size > 1, onBack = popSubRoute)
 
     NavDisplay(
         backStack = subBackStack,
@@ -55,15 +96,55 @@ fun ChaoxingRootFlow(initialRoute: ChaoxingNavKey = ChaoxingNavKey.Dashboard, on
             rememberSaveableStateHolderNavEntryDecorator(),
             rememberViewModelStoreNavEntryDecorator(),
         ),
-        entryProvider = entryProvider {
-            registerChaoxingSubEntries(
-                onNavigate = { target -> subBackStack += target },
-                onBack = popSubRoute,
-                onFirstAccountBound = { navigateToDashboard() },
-            )
-        },
+        entryProvider = provider,
     )
 }
+
+internal fun SnapshotStateList<NavKey>.pushChaoxingRoute(target: ChaoxingNavKey) {
+    val currentTop = lastOrNull()
+    if (currentTop == target) {
+        return
+    }
+    if (currentTop is ChaoxingNavKey.Accounts && target is ChaoxingNavKey.Accounts) {
+        this[lastIndex] = target
+    } else {
+        add(target)
+    }
+}
+
+internal fun SnapshotStateList<NavKey>.popOrResetToDashboard() {
+    val dashboardIndex = indexOfFirst { it is ChaoxingNavKey.Dashboard }
+    if (dashboardIndex >= 0) {
+        while (lastIndex > dashboardIndex) {
+            removeAt(lastIndex)
+        }
+    } else {
+        clear()
+        add(ChaoxingNavKey.Dashboard)
+    }
+}
+
+internal fun chaoxingSubBackStackSaver(): Saver<SnapshotStateList<NavKey>, ArrayList<String>> = Saver(
+    save = { stateList ->
+        val encoded = ArrayList<String>(stateList.size)
+        for (entry in stateList) {
+            if (entry is ChaoxingNavKey) {
+                encoded.add(Json.encodeToString(ChaoxingNavKey.serializer(), entry))
+            }
+        }
+        encoded
+    },
+    restore = { savedList ->
+        val decoded = savedList.mapNotNull { raw ->
+            runCatching { Json.decodeFromString(ChaoxingNavKey.serializer(), raw) }.getOrNull()
+        }
+        if (decoded.isEmpty()) {
+            null
+        } else {
+            mutableStateListOf<NavKey>().apply { addAll(decoded) }
+        }
+    },
+)
 
 /**
  * 向宿主 `EntryProviderScope<NavKey>` 注册学习通全量路由。

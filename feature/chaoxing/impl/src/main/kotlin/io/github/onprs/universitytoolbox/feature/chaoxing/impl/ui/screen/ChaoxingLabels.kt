@@ -44,8 +44,8 @@ internal fun ChaoxingUserSignStatus.displayLabel(): String = when (this) {
 internal fun SignExecutionResult.displayStatusText(): String = when (this) {
     is SignExecutionResult.Success -> "签到成功：$message"
     is SignExecutionResult.AlreadySigned -> "已签到：$message"
-    is SignExecutionResult.RequiresCaptcha -> "待行为验证：$message"
-    is SignExecutionResult.RequiresExtraInput -> "缺少参数：$message"
+    is SignExecutionResult.RequiresCaptcha -> "待安全验证：$message"
+    is SignExecutionResult.RequiresExtraInput -> "请补充签到信息：$message"
     is SignExecutionResult.SessionExpired -> "会话过期：$message"
     is SignExecutionResult.QuotaRestricted -> "配额受限：$message"
     is SignExecutionResult.DuplicateDeviceCode -> "设备冲突：$message"
@@ -56,8 +56,8 @@ internal fun SignExecutionResult.displayStatusText(): String = when (this) {
 internal fun formatRecordOutcomeLabel(outcome: String): String = when (outcome) {
     "SUCCESS" -> "签到成功"
     "ALREADY_SIGNED" -> "已签到"
-    "CAPTCHA_SUSPENDED" -> "待行为验证"
-    "MISSING_INPUT" -> "缺少参数"
+    "CAPTCHA_SUSPENDED" -> "待安全验证"
+    "MISSING_INPUT" -> "信息待补充"
     "SESSION_EXPIRED" -> "会话过期"
     "QUOTA_RESTRICTED" -> "配额受限"
     "DUPLICATE_DEVICE" -> "设备冲突"
