@@ -1,0 +1,31 @@
+# 环境变量与本地配置
+.env
+.env.*
+!.env.example
+local.properties
+
+# 私有密钥仓库与签名证书
+private/
+*.keystore
+*.jks
+
+# Gradle 与构建产物
+.gradle/
+build/
+**/build/
+.cxx/
+.externalNativeBuild/
+captures/
+
+# IDE 与编辑器
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# 操作系统与运行时杂项
+.DS_Store
+Thumbs.db
+*.hprof
+*.log
