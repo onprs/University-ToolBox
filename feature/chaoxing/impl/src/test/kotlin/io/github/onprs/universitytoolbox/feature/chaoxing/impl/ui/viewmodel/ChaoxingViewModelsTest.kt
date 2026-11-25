@@ -74,14 +74,9 @@ import org.robolectric.RobolectricTestRunner
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class ChaoxingViewModelsTest {
-    private val testDispatcher = UnconfinedTestDispatcher()
-    private val testDispatcherProvider = object : DispatcherProvider {
-        override val io: CoroutineDispatcher = testDispatcher
-        override val default: CoroutineDispatcher = testDispatcher
-        override val main: CoroutineDispatcher = testDispatcher
-        override val mainImmediate: CoroutineDispatcher = testDispatcher
-    }
+    private lateinit var testDispatcher: CoroutineDispatcher
     private lateinit var server: MockWebServer
+    private lateinit var okHttpClient: OkHttpClient
     private lateinit var database: ChaoxingDatabase
     private lateinit var licenseEngine: TestLicenseEngine
     private lateinit var governanceRepo: TestGovernanceRepository
@@ -102,6 +97,13 @@ class ChaoxingViewModelsTest {
 
     @Before
     fun setUp() {
+        testDispatcher = UnconfinedTestDispatcher()
+        val testDispatcherProvider = object : DispatcherProvider {
+            override val io: CoroutineDispatcher = testDispatcher
+            override val default: CoroutineDispatcher = testDispatcher
+            override val main: CoroutineDispatcher = testDispatcher
+            override val mainImmediate: CoroutineDispatcher = testDispatcher
+        }
         Dispatchers.setMain(testDispatcher)
         server = MockWebServer()
         server.start()
@@ -120,7 +122,7 @@ class ChaoxingViewModelsTest {
         governanceRepo = TestGovernanceRepository()
         licenseCoordinator = LicenseCoordinator(licenseEngine, TimeProvider { FIXED_NOW_MS })
         val cookieVault = AccountCookieVault(InMemoryAccountCookieStorage())
-        val client = OkHttpClient.Builder()
+        okHttpClient = OkHttpClient.Builder()
             .followRedirects(false)
             .addInterceptor(AccountSessionInterceptor(cookieVault))
             .build()
@@ -135,7 +137,7 @@ class ChaoxingViewModelsTest {
             captchaBaseUrl = baseUrl,
             photoBaseUrl = baseUrl,
         )
-        val executor = ChaoxingHttpExecutor(client)
+        val executor = ChaoxingHttpExecutor(okHttpClient)
         val htmlParser = ChaoxingHtmlParser()
         authRemote = ChaoxingAuthRemoteDataSource(
             executor = executor,
@@ -193,9 +195,11 @@ class ChaoxingViewModelsTest {
 
     @After
     fun tearDown() {
-        database.close()
-        server.close()
+        okHttpClient.dispatcher.cancelAll()
+        okHttpClient.dispatcher.executorService.shutdown()
         Dispatchers.resetMain()
+        server.close()
+        database.close()
     }
 
     @Test
@@ -290,17 +294,19 @@ class ChaoxingViewModelsTest {
             accountsVm.submitPasswordLogin()
             val firstEvent = awaitItem()
             assertEquals(ChaoxingAccountsUiEvent.FirstAccountBound("cx_9001"), firstEvent)
+            accountsVm.uiState.first { !it.isSubmittingLogin && it.accounts.size == 1 }
 
-            // 绑定第二个账号时不应再次发出首个账号导航事件
+            // 绑定第二个账号时不应再次发出首个账号导航事件，须等待异步登录落库完成后断言
             accountsVm.updateAccountInput("13800138002")
             accountsVm.updatePasswordInput("pass456")
             accountsVm.submitPasswordLogin()
+            accountsVm.uiState.first { !it.isSubmittingLogin && it.accounts.size == 2 }
             expectNoEvents()
             cancelAndIgnoreRemainingEvents()
         }
 
         val dashboardVm = ChaoxingDashboardViewModel(accountManager, licenseCoordinator, governanceRepo)
-        val syncedState = dashboardVm.uiState.first { it.courses.isNotEmpty() }
+        val syncedState = dashboardVm.uiState.first { !it.isLoadingCourses && it.courses.isNotEmpty() }
         assertEquals("自动同步示例课程", syncedState.courses.first().name)
     }
 
