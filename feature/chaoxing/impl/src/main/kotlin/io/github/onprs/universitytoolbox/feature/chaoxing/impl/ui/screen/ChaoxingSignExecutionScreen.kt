@@ -1,26 +1,42 @@
 package io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.screen
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.BookmarkAdd
@@ -51,20 +67,31 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxLinearProgressBar
 import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxSectionHeader
@@ -87,6 +114,107 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.G
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.sign.SignExecutionResult
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.ChaoxingSignExecutionUiState
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.viewmodel.ChaoxingSignExecutionViewModel
+import java.io.ByteArrayOutputStream
+import kotlin.math.abs
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+private const val MAX_LATITUDE_ABS = 90.0
+private const val MAX_LONGITUDE_ABS = 180.0
+
+/**
+ * 拍照签到图片流式降采样与压缩处理器：
+ * - 通过 `inJustDecodeBounds` + `inSampleSize` 杜绝超高像素原图解码引发的 OOM；
+ * - 将上传图片限制在合理边长并转为标准 JPEG，兼顾课堂照片清晰度与上传稳定性。
+ */
+internal object SignPhotoImageProcessor {
+    const val MAX_UPLOAD_DIMENSION_PX = 1920
+    const val MAX_PREVIEW_DIMENSION_PX = 360
+    private const val JPEG_COMPRESS_QUALITY = 85
+    private const val SAMPLE_SCALE_STEP = 2
+
+    fun computeInSampleSize(srcWidth: Int, srcHeight: Int, maxDimensionPx: Int): Int {
+        if (srcWidth <= 0 || srcHeight <= 0 || maxDimensionPx <= 0) {
+            return 1
+        }
+        val largestSide = maxOf(srcWidth, srcHeight)
+        var sampleSize = 1
+        while (largestSide / (sampleSize * SAMPLE_SCALE_STEP) >= maxDimensionPx) {
+            sampleSize *= SAMPLE_SCALE_STEP
+        }
+        return sampleSize
+    }
+
+    fun decodeAndCompressFromUri(
+        context: Context,
+        uri: Uri,
+        maxDimensionPx: Int = MAX_UPLOAD_DIMENSION_PX,
+    ): ByteArray? = runCatching {
+        val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, boundsOptions)
+        } ?: return null
+
+        val rawWidth = boundsOptions.outWidth
+        val rawHeight = boundsOptions.outHeight
+        if (rawWidth <= 0 || rawHeight <= 0) {
+            return null
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = computeInSampleSize(rawWidth, rawHeight, maxDimensionPx)
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val sampled = context.contentResolver.openInputStream(uri)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, decodeOptions)
+        } ?: return null
+
+        val scaled = scaleDownIfNeeded(sampled, maxDimensionPx)
+        val output = ByteArrayOutputStream()
+        val compressedOk = scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_COMPRESS_QUALITY, output)
+        if (scaled !== sampled) {
+            scaled.recycle()
+        }
+        sampled.recycle()
+        output.toByteArray().takeIf { compressedOk && it.isNotEmpty() }
+    }.getOrNull()
+
+    fun decodePreviewBitmap(bytes: ByteArray, maxDimensionPx: Int = MAX_PREVIEW_DIMENSION_PX): Bitmap? = runCatching {
+        if (bytes.isEmpty()) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = computeInSampleSize(bounds.outWidth, bounds.outHeight, maxDimensionPx)
+        }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions)
+    }.getOrNull()
+
+    private fun scaleDownIfNeeded(source: Bitmap, maxDimensionPx: Int): Bitmap {
+        val longest = maxOf(source.width, source.height)
+        if (longest <= maxDimensionPx || maxDimensionPx <= 0) {
+            return source
+        }
+        val ratio = maxDimensionPx.toFloat() / longest.toFloat()
+        val targetWidth = (source.width * ratio).roundToInt().coerceAtLeast(1)
+        val targetHeight = (source.height * ratio).roundToInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true)
+    }
+}
+
+internal fun validateCoordinateFieldError(rawInput: String, maxAbs: Double, axisLabel: String): String? {
+    val trimmed = rawInput.trim()
+    if (trimmed.isEmpty()) return null
+    val parsed = trimmed.toDoubleOrNull() ?: return "请输入有效的${axisLabel}数字"
+    return if (!parsed.isFinite() || abs(parsed) > maxAbs) {
+        "${axisLabel}范围应为 -${maxAbs.toInt()} ~ ${maxAbs.toInt()}"
+    } else {
+        null
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -97,32 +225,7 @@ fun ChaoxingSignExecutionScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    var pendingJumpInMap by remember { mutableStateOf(false) }
-
-    val locationPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions(),
-    ) { result ->
-        val granted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-            result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        if (granted) {
-            viewModel.useCurrentDeviceLocation(jumpInMap = pendingJumpInMap)
-        } else {
-            viewModel.notifyMapPermissionDenied()
-        }
-    }
-    val requestDeviceLocation: (Boolean) -> Unit = { jumpInMap ->
-        pendingJumpInMap = jumpInMap
-        if (hasAnyLocationPermission(context)) {
-            viewModel.useCurrentDeviceLocation(jumpInMap = jumpInMap)
-        } else {
-            locationPermissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                ),
-            )
-        }
-    }
+    val permController = rememberLocationPermissionController(context = context, viewModel = viewModel)
 
     val loadedDetail = state.detail
     LaunchedEffect(loadedDetail?.activeId) {
@@ -131,16 +234,109 @@ fun ChaoxingSignExecutionScreen(
         }
     }
 
-    SignExecutionSheetsHost(
-        state = state,
-        viewModel = viewModel,
-        onRequestDeviceLocationInMap = { requestDeviceLocation(true) },
+    SignExecutionModalHost(state = state, viewModel = viewModel)
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        SignExecutionScaffoldLayer(
+            state = state,
+            courseName = courseName,
+            viewModel = viewModel,
+            showLocationSettingsGuide = permController.showSettingsGuide,
+            onRequestCurrentLocation = { permController.requestLocation(false) },
+            onOpenAppSettings = { openAppDetailSettings(context) },
+            onBack = onBack,
+        )
+
+        if (state.isMapPickerOpen) {
+            SignExecutionMapPickerLauncher(
+                state = state,
+                viewModel = viewModel,
+                isLocationPermanentlyDenied = permController.showSettingsGuide,
+                onRequestDeviceLocationInMap = { permController.requestLocation(true) },
+                onOpenAppSettings = { openAppDetailSettings(context) },
+            )
+        }
+    }
+}
+
+private class LocationPermissionController(
+    val showSettingsGuide: Boolean,
+    val requestLocation: (jumpInMap: Boolean) -> Unit,
+)
+
+@Composable
+private fun rememberLocationPermissionController(
+    context: Context,
+    viewModel: ChaoxingSignExecutionViewModel,
+): LocationPermissionController {
+    val focusManager = LocalFocusManager.current
+    var pendingJumpInMap by rememberSaveable { mutableStateOf(false) }
+    var hasLocationPermission by remember { mutableStateOf(hasAnyLocationPermission(context)) }
+    var isLocationPermanentlyDenied by rememberSaveable { mutableStateOf(false) }
+
+    ObserveResumePermissionSync(
+        onResume = {
+            val grantedNow = hasAnyLocationPermission(context)
+            hasLocationPermission = grantedNow
+            if (grantedNow) {
+                isLocationPermanentlyDenied = false
+            }
+        },
     )
 
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        val granted = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            result[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        hasLocationPermission = granted
+        if (granted) {
+            isLocationPermanentlyDenied = false
+            viewModel.useCurrentDeviceLocation(jumpInMap = pendingJumpInMap)
+        } else {
+            val permanentlyDenied = isLocationPermissionPermanentlyDenied(context)
+            isLocationPermanentlyDenied = permanentlyDenied
+            viewModel.notifyMapPermissionDenied(isPermanentlyDenied = permanentlyDenied)
+        }
+    }
+
+    return LocationPermissionController(
+        showSettingsGuide = isLocationPermanentlyDenied && !hasLocationPermission,
+        requestLocation = { jumpInMap ->
+            focusManager.clearFocus()
+            pendingJumpInMap = jumpInMap
+            if (hasAnyLocationPermission(context)) {
+                hasLocationPermission = true
+                isLocationPermanentlyDenied = false
+                viewModel.useCurrentDeviceLocation(jumpInMap = jumpInMap)
+            } else {
+                launcher.launch(
+                    arrayOf(
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                    ),
+                )
+            }
+        },
+    )
+}
+
+@Composable
+private fun SignExecutionScaffoldLayer(
+    state: ChaoxingSignExecutionUiState,
+    courseName: String,
+    viewModel: ChaoxingSignExecutionViewModel,
+    showLocationSettingsGuide: Boolean,
+    onRequestCurrentLocation: () -> Unit,
+    onOpenAppSettings: () -> Unit,
+    onBack: () -> Unit,
+) {
     Scaffold(topBar = { SignExecutionTopBar(onBack = onBack) }) { innerPadding ->
         val containerModifier = Modifier
             .fillMaxSize()
             .padding(innerPadding)
+            .consumeWindowInsets(innerPadding)
+            .imePadding()
 
         when {
             state.isLoadingDetail -> LoadingStateView(modifier = containerModifier)
@@ -153,23 +349,45 @@ fun ChaoxingSignExecutionScreen(
 
             else -> SignExecutionBody(
                 state = state,
-                detail = state.detail!!,
+                detail = state.detail,
                 courseName = courseName,
                 viewModel = viewModel,
-                onRequestCurrentLocation = { requestDeviceLocation(false) },
+                showLocationSettingsGuide = showLocationSettingsGuide,
+                onRequestCurrentLocation = onRequestCurrentLocation,
+                onOpenAppSettings = onOpenAppSettings,
                 modifier = containerModifier,
             )
         }
     }
 }
 
+@Composable
+private fun ObserveResumePermissionSync(onResume: () -> Unit) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                onResume()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SignExecutionTopBar(onBack: () -> Unit) {
+    val focusManager = LocalFocusManager.current
     TopAppBar(
         title = { Text(text = stringResource(R.string.chaoxing_sign_execution_title)) },
         navigationIcon = {
-            IconButton(onClick = onBack) {
+            IconButton(
+                onClick = {
+                    focusManager.clearFocus()
+                    onBack()
+                },
+            ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
                     contentDescription = stringResource(R.string.chaoxing_back),
@@ -195,12 +413,53 @@ private fun hasAnyLocationPermission(context: Context): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
         PackageManager.PERMISSION_GRANTED
 
+private fun isLocationPermissionPermanentlyDenied(context: Context): Boolean {
+    if (hasAnyLocationPermission(context)) return false
+    val activity = context.findActivity() ?: return false
+    val showFine = ActivityCompat.shouldShowRequestPermissionRationale(
+        activity,
+        Manifest.permission.ACCESS_FINE_LOCATION,
+    )
+    val showCoarse = ActivityCompat.shouldShowRequestPermissionRationale(
+        activity,
+        Manifest.permission.ACCESS_COARSE_LOCATION,
+    )
+    return !showFine && !showCoarse
+}
+
+private fun isCameraPermissionPermanentlyDenied(context: Context): Boolean {
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+        return false
+    }
+    val activity = context.findActivity() ?: return false
+    return !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.CAMERA)
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+internal fun openAppDetailSettings(context: Context) {
+    runCatching {
+        val detailIntent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.fromParts("package", context.packageName, null),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(detailIntent)
+    }.onFailure {
+        runCatching {
+            context.startActivity(
+                Intent(Settings.ACTION_APPLICATION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+    }
+}
+
 @Composable
-private fun SignExecutionSheetsHost(
-    state: ChaoxingSignExecutionUiState,
-    viewModel: ChaoxingSignExecutionViewModel,
-    onRequestDeviceLocationInMap: () -> Unit,
-) {
+private fun SignExecutionModalHost(state: ChaoxingSignExecutionUiState, viewModel: ChaoxingSignExecutionViewModel) {
+    val focusManager = LocalFocusManager.current
     if (state.isScannerSheetOpen) {
         QrScannerBottomSheet(
             onBarcodeScanned = viewModel::onBarcodeScanned,
@@ -219,6 +478,7 @@ private fun SignExecutionSheetsHost(
                 viewModel.setPresetSheetOpen(false)
             },
             onOpenMapPicker = {
+                focusManager.clearFocus()
                 viewModel.setPresetSheetOpen(false)
                 viewModel.setMapPickerOpen(true)
             },
@@ -233,24 +493,18 @@ private fun SignExecutionSheetsHost(
             onDismiss = { viewModel.setDeviceInfoDialogOpen(false) },
         )
     }
-
-    if (state.isMapPickerOpen) {
-        SignExecutionMapPickerLauncher(
-            state = state,
-            viewModel = viewModel,
-            onRequestDeviceLocationInMap = onRequestDeviceLocationInMap,
-        )
-    }
 }
 
 @Composable
 private fun SignExecutionMapPickerLauncher(
     state: ChaoxingSignExecutionUiState,
     viewModel: ChaoxingSignExecutionViewModel,
+    isLocationPermanentlyDenied: Boolean,
     onRequestDeviceLocationInMap: () -> Unit,
+    onOpenAppSettings: () -> Unit,
 ) {
-    val currentLat = state.latitudeInput.toDoubleOrNull()
-    val currentLng = state.longitudeInput.toDoubleOrNull()
+    val currentLat = state.latitudeInput.trim().toDoubleOrNull()
+    val currentLng = state.longitudeInput.trim().toDoubleOrNull()
     val initialPoint = if (CoordinateConverter.isValidTargetCoordinate(currentLat, currentLng)) {
         GeoPoint(currentLat!!, currentLng!!)
     } else {
@@ -288,6 +542,9 @@ private fun SignExecutionMapPickerLauncher(
             viewModel.savePresetLocation(title, point.latitude, point.longitude, addr)
         },
         onDismiss = { viewModel.setMapPickerOpen(false) },
+        onDismissSearchResults = viewModel::dismissMapSearchResults,
+        isLocationPermanentlyDenied = isLocationPermanentlyDenied,
+        onOpenAppSettings = onOpenAppSettings,
     )
 }
 
@@ -297,9 +554,12 @@ private fun SignExecutionBody(
     detail: ChaoxingActiveDetail,
     courseName: String,
     viewModel: ChaoxingSignExecutionViewModel,
+    showLocationSettingsGuide: Boolean,
     onRequestCurrentLocation: () -> Unit,
+    onOpenAppSettings: () -> Unit,
     modifier: Modifier,
 ) {
+    val focusManager = LocalFocusManager.current
     LazyColumn(
         modifier = modifier,
         contentPadding = PaddingValues(ToolboxSpacing.medium),
@@ -312,7 +572,9 @@ private fun SignExecutionBody(
                 state = state,
                 detail = detail,
                 viewModel = viewModel,
+                showLocationSettingsGuide = showLocationSettingsGuide,
                 onRequestCurrentLocation = onRequestCurrentLocation,
+                onOpenAppSettings = onOpenAppSettings,
             )
         }
 
@@ -328,18 +590,7 @@ private fun SignExecutionBody(
 
         if (!state.inputHintMessage.isNullOrBlank()) {
             item {
-                Surface(
-                    color = ToolboxTheme.extendedColors.warningContainer,
-                    shape = RoundedCornerShape(ToolboxRadius.chip),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        text = state.inputHintMessage,
-                        color = ToolboxTheme.extendedColors.onWarningContainer,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(ToolboxSpacing.small),
-                    )
-                }
+                InputWarningHintBanner(message = state.inputHintMessage)
             }
         }
 
@@ -359,7 +610,10 @@ private fun SignExecutionBody(
             SubmitSignButtonSection(
                 isExecuting = state.isExecuting,
                 selectedCount = state.selectedAccountIds.size,
-                onExecute = { viewModel.executeSign(courseName = courseName) },
+                onExecute = {
+                    focusManager.clearFocus()
+                    viewModel.executeSign(courseName = courseName)
+                },
             )
         }
 
@@ -369,6 +623,22 @@ private fun SignExecutionBody(
                 BatchReportRow(report = report)
             }
         }
+    }
+}
+
+@Composable
+private fun InputWarningHintBanner(message: String) {
+    Surface(
+        color = ToolboxTheme.extendedColors.warningContainer,
+        shape = RoundedCornerShape(ToolboxRadius.chip),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = message,
+            color = ToolboxTheme.extendedColors.onWarningContainer,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(ToolboxSpacing.small),
+        )
     }
 }
 
@@ -434,7 +704,9 @@ private fun StrategyInputsSection(
     state: ChaoxingSignExecutionUiState,
     detail: ChaoxingActiveDetail,
     viewModel: ChaoxingSignExecutionViewModel,
+    showLocationSettingsGuide: Boolean,
     onRequestCurrentLocation: () -> Unit,
+    onOpenAppSettings: () -> Unit,
 ) {
     val needsPhoto = detail.requiresPhoto
     val needsQr = detail.signType == ChaoxingSignType.QR_CODE
@@ -465,7 +737,9 @@ private fun StrategyInputsSection(
                 state = state,
                 detail = detail,
                 viewModel = viewModel,
+                showLocationSettingsGuide = showLocationSettingsGuide,
                 onRequestCurrentLocation = onRequestCurrentLocation,
+                onOpenAppSettings = onOpenAppSettings,
             )
         }
         if (needsCode) {
@@ -476,6 +750,7 @@ private fun StrategyInputsSection(
 
 @Composable
 private fun QrSignInputSection(state: ChaoxingSignExecutionUiState, viewModel: ChaoxingSignExecutionViewModel) {
+    val focusManager = LocalFocusManager.current
     val galleryPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
@@ -492,7 +767,10 @@ private fun QrSignInputSection(state: ChaoxingSignExecutionUiState, viewModel: C
             Text(text = "二维码签到参数", style = MaterialTheme.typography.titleSmall)
             Row(horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small)) {
                 FilledTonalButton(
-                    onClick = { viewModel.setScannerSheetOpen(true) },
+                    onClick = {
+                        focusManager.clearFocus()
+                        viewModel.setScannerSheetOpen(true)
+                    },
                     modifier = Modifier.weight(1f),
                 ) {
                     Icon(imageVector = Icons.Outlined.QrCodeScanner, contentDescription = null)
@@ -500,6 +778,7 @@ private fun QrSignInputSection(state: ChaoxingSignExecutionUiState, viewModel: C
                 }
                 FilledTonalButton(
                     onClick = {
+                        focusManager.clearFocus()
                         galleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     },
                     modifier = Modifier.weight(1f),
@@ -511,13 +790,15 @@ private fun QrSignInputSection(state: ChaoxingSignExecutionUiState, viewModel: C
             OutlinedTextField(
                 value = state.qrRawInput,
                 onValueChange = viewModel::updateQrRawInput,
-                label = { Text(text = "二维码链接或 SIGNIN 参数") },
+                label = { Text(text = "二维码内容或签到链接") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            state.parsedQrEnc?.let { enc ->
+            if (!state.parsedQrEnc.isNullOrBlank()) {
                 Text(
-                    text = "已解析动态校验串：${enc.take(12)}…",
+                    text = "已识别签到二维码校验信息",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -529,13 +810,24 @@ private fun QrSignInputSection(state: ChaoxingSignExecutionUiState, viewModel: C
 @Composable
 private fun PhotoSignInputSection(state: ChaoxingSignExecutionUiState, viewModel: ChaoxingSignExecutionViewModel) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var isProcessingPhoto by remember { mutableStateOf(false) }
+
     val photoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
         if (uri != null) {
-            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            if (bytes != null && bytes.isNotEmpty()) {
-                viewModel.setPhoto(bytes = bytes, fileName = "sign_photo.jpg")
+            scope.launch {
+                isProcessingPhoto = true
+                val compressed = withContext(Dispatchers.IO) {
+                    SignPhotoImageProcessor.decodeAndCompressFromUri(context, uri)
+                }
+                isProcessingPhoto = false
+                if (compressed != null) {
+                    viewModel.setPhoto(bytes = compressed, fileName = "sign_photo.jpg")
+                } else {
+                    viewModel.notifyPhotoLoadFailed()
+                }
             }
         }
     }
@@ -546,8 +838,11 @@ private fun PhotoSignInputSection(state: ChaoxingSignExecutionUiState, viewModel
             verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
         ) {
             Text(text = "现场照片上传", style = MaterialTheme.typography.titleSmall)
+            if (isProcessingPhoto) {
+                ToolboxLinearProgressBar()
+            }
             val bitmap = remember(state.photo) {
-                state.photo?.bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                state.photo?.bytes?.let(SignPhotoImageProcessor::decodePreviewBitmap)
             }
             if (bitmap != null) {
                 Image(
@@ -562,6 +857,7 @@ private fun PhotoSignInputSection(state: ChaoxingSignExecutionUiState, viewModel
                 onClick = {
                     photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 },
+                enabled = !isProcessingPhoto,
             ) {
                 Icon(imageVector = Icons.Outlined.CameraAlt, contentDescription = null)
                 Text(text = if (bitmap == null) " 选择签到照片" else " 更换照片")
@@ -575,11 +871,14 @@ private fun LocationSignInputSection(
     state: ChaoxingSignExecutionUiState,
     detail: ChaoxingActiveDetail,
     viewModel: ChaoxingSignExecutionViewModel,
+    showLocationSettingsGuide: Boolean,
     onRequestCurrentLocation: () -> Unit,
+    onOpenAppSettings: () -> Unit,
 ) {
-    var showQuickSaveDialog by remember { mutableStateOf(false) }
-    val currentLat = state.latitudeInput.toDoubleOrNull()
-    val currentLng = state.longitudeInput.toDoubleOrNull()
+    val focusManager = LocalFocusManager.current
+    var showQuickSaveDialog by rememberSaveable { mutableStateOf(false) }
+    val currentLat = state.latitudeInput.trim().toDoubleOrNull()
+    val currentLng = state.longitudeInput.trim().toDoubleOrNull()
     val canSaveCurrent = CoordinateConverter.isValidTargetCoordinate(currentLat, currentLng)
 
     if (showQuickSaveDialog && canSaveCurrent) {
@@ -612,41 +911,94 @@ private fun LocationSignInputSection(
                 presetCount = state.presetLocations.size,
                 isLocating = state.isLocatingCurrent,
                 canSaveCurrent = canSaveCurrent,
-                onOpenMapPicker = { viewModel.setMapPickerOpen(true) },
-                onOpenPresets = { viewModel.setPresetSheetOpen(true) },
+                onOpenMapPicker = {
+                    focusManager.clearFocus()
+                    viewModel.setMapPickerOpen(true)
+                },
+                onOpenPresets = {
+                    focusManager.clearFocus()
+                    viewModel.setPresetSheetOpen(true)
+                },
                 onLocateCurrent = onRequestCurrentLocation,
-                onSaveCurrent = { showQuickSaveDialog = true },
+                onSaveCurrent = {
+                    focusManager.clearFocus()
+                    showQuickSaveDialog = true
+                },
             )
 
             if (state.isLocatingCurrent) {
                 ToolboxLinearProgressBar()
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small)) {
-                OutlinedTextField(
-                    value = state.latitudeInput,
-                    onValueChange = { viewModel.updateLocation(it, state.longitudeInput, state.addressInput) },
-                    label = { Text(text = "纬度") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-                OutlinedTextField(
-                    value = state.longitudeInput,
-                    onValueChange = { viewModel.updateLocation(state.latitudeInput, it, state.addressInput) },
-                    label = { Text(text = "经度") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
+            if (showLocationSettingsGuide) {
+                PermissionGuideCard(
+                    title = "定位权限已关闭",
+                    rationale = "如需获取当前设备实时坐标，请前往系统设置开启位置信息权限；也可直接使用地图选点或预设坐标。",
+                    isPermanentlyDenied = true,
+                    onRequestPermission = onOpenAppSettings,
                 )
             }
-            OutlinedTextField(
-                value = state.addressInput,
-                onValueChange = { viewModel.updateLocation(state.latitudeInput, state.longitudeInput, it) },
-                label = { Text(text = "位置描述") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+
+            LocationCoordinateFields(
+                latitudeInput = state.latitudeInput,
+                longitudeInput = state.longitudeInput,
+                addressInput = state.addressInput,
+                onUpdateLocation = viewModel::updateLocation,
             )
         }
     }
+}
+
+@Composable
+private fun LocationCoordinateFields(
+    latitudeInput: String,
+    longitudeInput: String,
+    addressInput: String,
+    onUpdateLocation: (String, String, String) -> Unit,
+) {
+    val focusManager = LocalFocusManager.current
+    val latError = validateCoordinateFieldError(latitudeInput, MAX_LATITUDE_ABS, "纬度")
+    val lngError = validateCoordinateFieldError(longitudeInput, MAX_LONGITUDE_ABS, "经度")
+
+    Row(horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small)) {
+        OutlinedTextField(
+            value = latitudeInput,
+            onValueChange = { onUpdateLocation(it, longitudeInput, addressInput) },
+            label = { Text(text = "纬度") },
+            isError = latError != null,
+            supportingText = latError?.let { msg -> { Text(text = msg) } },
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Decimal,
+                imeAction = ImeAction.Next,
+            ),
+            keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Next) }),
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+        )
+        OutlinedTextField(
+            value = longitudeInput,
+            onValueChange = { onUpdateLocation(latitudeInput, it, addressInput) },
+            label = { Text(text = "经度") },
+            isError = lngError != null,
+            supportingText = lngError?.let { msg -> { Text(text = msg) } },
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Decimal,
+                imeAction = ImeAction.Next,
+            ),
+            keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Next) }),
+            singleLine = true,
+            modifier = Modifier.weight(1f),
+        )
+    }
+    OutlinedTextField(
+        value = addressInput,
+        onValueChange = { onUpdateLocation(latitudeInput, longitudeInput, it) },
+        label = { Text(text = "位置描述") },
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 @Composable
@@ -715,9 +1067,9 @@ private fun PresetLocationsBottomSheet(
     onOpenMapPicker: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var showSaveDialog by remember { mutableStateOf(false) }
-    val currentLat = state.latitudeInput.toDoubleOrNull()
-    val currentLng = state.longitudeInput.toDoubleOrNull()
+    var showSaveDialog by rememberSaveable { mutableStateOf(false) }
+    val currentLat = state.latitudeInput.trim().toDoubleOrNull()
+    val currentLng = state.longitudeInput.trim().toDoubleOrNull()
     val canSaveCurrent = CoordinateConverter.isValidTargetCoordinate(currentLat, currentLng)
     val detail = state.detail
 
@@ -760,7 +1112,13 @@ private fun PresetSheetBody(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = ToolboxSpacing.medium, vertical = ToolboxSpacing.small),
+            .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+            .padding(
+                start = ToolboxSpacing.medium,
+                end = ToolboxSpacing.medium,
+                top = ToolboxSpacing.small,
+                bottom = ToolboxSpacing.medium,
+            ),
         verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
     ) {
         Row(
@@ -900,7 +1258,11 @@ private fun CodeGestureInputSection(
     detail: ChaoxingActiveDetail,
     viewModel: ChaoxingSignExecutionViewModel,
 ) {
-    val label = if (detail.signType == ChaoxingSignType.GESTURE) "手势序号（如 1235789）" else "数字签到码"
+    val focusManager = LocalFocusManager.current
+    val isGesture = detail.signType == ChaoxingSignType.GESTURE
+    val label = if (isGesture) "手势序号（如 1235789）" else "数字签到码"
+    val keyboardType = if (isGesture) KeyboardType.Number else KeyboardType.Text
+
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(ToolboxSpacing.medium),
@@ -911,6 +1273,8 @@ private fun CodeGestureInputSection(
                 value = state.signCodeInput,
                 onValueChange = viewModel::updateSignCode,
                 label = { Text(text = label) },
+                keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -920,13 +1284,14 @@ private fun CodeGestureInputSection(
 
 @Composable
 private fun CaptchaPendingCard(message: String, validateInput: String, onValidateChange: (String) -> Unit) {
+    val focusManager = LocalFocusManager.current
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(ToolboxSpacing.medium),
             verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
         ) {
             Text(
-                text = "需要完成行为验证码",
+                text = "需要完成安全验证",
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.error,
             )
@@ -934,7 +1299,9 @@ private fun CaptchaPendingCard(message: String, validateInput: String, onValidat
             OutlinedTextField(
                 value = validateInput,
                 onValueChange = onValidateChange,
-                label = { Text(text = "验证码校验凭据 (validate)") },
+                label = { Text(text = "安全验证凭据") },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -1050,33 +1417,66 @@ private fun QrScannerBottomSheet(onBarcodeScanned: (String) -> Unit, onDismiss: 
                 PackageManager.PERMISSION_GRANTED,
         )
     }
+    var isCameraPermanentlyDenied by rememberSaveable { mutableStateOf(false) }
+    var hasHandledScan by remember { mutableStateOf(false) }
+
+    ObserveResumePermissionSync(
+        onResume = {
+            val grantedNow = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+            hasCameraPermission = grantedNow
+            if (grantedNow) {
+                isCameraPermanentlyDenied = false
+            }
+        },
+    )
+
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
         hasCameraPermission = granted
+        isCameraPermanentlyDenied = if (granted) false else isCameraPermissionPermanentlyDenied(context)
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
                 .padding(ToolboxSpacing.medium),
             verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.medium),
         ) {
             Text(text = "扫描课堂签到二维码", style = MaterialTheme.typography.titleMedium)
             if (hasCameraPermission) {
                 BarcodeScannerView(
-                    onBarcodeDetected = { result -> onBarcodeScanned(result.rawValue) },
+                    onBarcodeDetected = { result ->
+                        if (!hasHandledScan && result.rawValue.isNotBlank()) {
+                            hasHandledScan = true
+                            onBarcodeScanned(result.rawValue)
+                        }
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(300.dp)
                         .clip(RoundedCornerShape(ToolboxRadius.card)),
                 )
             } else {
+                val rationaleText = if (isCameraPermanentlyDenied) {
+                    "相机权限已被关闭，请前往系统设置开启相机权限以扫描课堂签到二维码。"
+                } else {
+                    "用于实时扫描课堂投影展示的超星签到二维码。"
+                }
                 PermissionGuideCard(
                     title = "需要相机权限",
-                    rationale = "用于实时扫描课堂投影展示的超星签到二维码。",
-                    onRequestPermission = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                    rationale = rationaleText,
+                    isPermanentlyDenied = isCameraPermanentlyDenied,
+                    onRequestPermission = {
+                        if (isCameraPermanentlyDenied) {
+                            openAppDetailSettings(context)
+                        } else {
+                            permissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    },
                 )
             }
         }

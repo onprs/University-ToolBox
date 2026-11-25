@@ -1,30 +1,36 @@
 package io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.screen
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.BookmarkAdd
@@ -56,10 +62,15 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
@@ -72,11 +83,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.zIndex
 import coil3.SingletonImageLoader
 import coil3.request.ImageRequest
 import coil3.request.SuccessResult
@@ -92,6 +103,8 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.R
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.MapJumpCommand
 import kotlin.math.ln
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -101,6 +114,10 @@ private const val FALLBACK_OVERVIEW_ZOOM = 5.0
 private const val REVERSE_GEOCODE_DEBOUNCE_MS = 450L
 private const val TILE_CACHE_MAX_ENTRIES = 160
 private const val MAX_PARENT_FALLBACK_STEPS = 3
+private const val MAP_OVERLAY_Z_INDEX = 10f
+private const val COMPACT_VIEWPORT_HEIGHT_DP = 520f
+private const val ULTRA_COMPACT_VIEWPORT_HEIGHT_DP = 320f
+private const val DOUBLE_TAP_SLOP_DP = 42f
 
 private val STANDARD_MAP_BG_COLOR = Color(0xFFF3F1EC)
 private val SATELLITE_MAP_BG_COLOR = Color(0xFF18222B)
@@ -138,38 +155,155 @@ private class TileBitmapCache(private val maxEntries: Int = TILE_CACHE_MAX_ENTRI
     }
 }
 
-private class MapViewportHolder(initialCenterGcj: GeoPoint, initialConfirmed: Boolean, initialAddress: String) {
+/**
+ * 地图选点视口状态持有者（支持横竖屏旋转与配置变更恢复，并防止异步逆地理编码覆盖用户手动编辑内容）。
+ */
+internal class MapViewportHolder(
+    initialCenterGcj: GeoPoint,
+    initialConfirmed: Boolean,
+    initialAddress: String,
+    initialZoom: Double = if (initialConfirmed) SlippyMapProjection.DEFAULT_CAMPUS_ZOOM else FALLBACK_OVERVIEW_ZOOM,
+    initialSatelliteMode: Boolean = false,
+    initialShowSavePrompt: Boolean = false,
+    initialHasUserMovedMap: Boolean = false,
+    initialAddressManuallyEdited: Boolean = false,
+) {
     var centerGcj by mutableStateOf(initialCenterGcj)
-    var zoom by mutableDoubleStateOf(
-        if (initialConfirmed) SlippyMapProjection.DEFAULT_CAMPUS_ZOOM else FALLBACK_OVERVIEW_ZOOM,
-    )
+    var zoom by mutableDoubleStateOf(initialZoom)
     var hasConfirmedLocation by mutableStateOf(initialConfirmed)
-    var satelliteMode by mutableStateOf(false)
+    var satelliteMode by mutableStateOf(initialSatelliteMode)
     var addressText by mutableStateOf(initialAddress)
-    var showSavePresetPrompt by mutableStateOf(false)
+    var showSavePresetPrompt by mutableStateOf(initialShowSavePrompt)
+    var hasUserMovedMap by mutableStateOf(initialHasUserMovedMap)
+    var isAddressManuallyEdited by mutableStateOf(initialAddressManuallyEdited)
 
     fun applyPlace(place: ResolvedPlace, fallbackTitle: Boolean = false) {
         centerGcj = place.gcj02Point
         zoom = SlippyMapProjection.DEFAULT_CAMPUS_ZOOM
         hasConfirmedLocation = true
-        if (fallbackTitle) {
-            addressText = place.address.ifBlank { place.title }
-        } else if (place.address.isNotBlank()) {
-            addressText = place.address
+        isAddressManuallyEdited = false
+        val resolvedAddr = if (fallbackTitle) {
+            place.address.ifBlank { place.title }
+        } else {
+            place.address
+        }
+        if (resolvedAddr.isNotBlank()) {
+            addressText = resolvedAddr
+            hasUserMovedMap = false
+        } else {
+            hasUserMovedMap = true
         }
     }
 
-    fun updateCenterAndZoom(nextCenter: GeoPoint, nextZoom: Double) {
+    fun updateCenterAndZoomByUser(nextCenter: GeoPoint, nextZoom: Double) {
+        val centerChanged = nextCenter != centerGcj
         centerGcj = nextCenter
         zoom = nextZoom
         hasConfirmedLocation = true
+        if (centerChanged) {
+            hasUserMovedMap = true
+            isAddressManuallyEdited = false
+        }
+    }
+
+    fun onManualAddressInput(text: String) {
+        addressText = text
+        isAddressManuallyEdited = true
+    }
+
+    fun applyReverseGeocodedAddressIfEligible(resolved: String, isAddressFieldFocused: Boolean) {
+        if (!isAddressManuallyEdited && !isAddressFieldFocused && resolved.isNotBlank()) {
+            addressText = resolved
+        }
+    }
+
+    companion object {
+        private const val IDX_LAT = 0
+        private const val IDX_LNG = 1
+        private const val IDX_ZOOM = 2
+        private const val IDX_CONFIRMED = 3
+        private const val IDX_SATELLITE = 4
+        private const val IDX_ADDRESS = 5
+        private const val IDX_SAVE_PROMPT = 6
+        private const val IDX_MOVED = 7
+        private const val IDX_EDITED = 8
+
+        val Saver: Saver<MapViewportHolder, Any> = listSaver(
+            save = { holder ->
+                listOf(
+                    holder.centerGcj.latitude,
+                    holder.centerGcj.longitude,
+                    holder.zoom,
+                    holder.hasConfirmedLocation,
+                    holder.satelliteMode,
+                    holder.addressText,
+                    holder.showSavePresetPrompt,
+                    holder.hasUserMovedMap,
+                    holder.isAddressManuallyEdited,
+                )
+            },
+            restore = { saved ->
+                MapViewportHolder(
+                    initialCenterGcj = GeoPoint(
+                        latitude = saved[IDX_LAT] as Double,
+                        longitude = saved[IDX_LNG] as Double,
+                    ),
+                    initialConfirmed = saved[IDX_CONFIRMED] as Boolean,
+                    initialAddress = saved[IDX_ADDRESS] as String,
+                    initialZoom = saved[IDX_ZOOM] as Double,
+                    initialSatelliteMode = saved[IDX_SATELLITE] as Boolean,
+                    initialShowSavePrompt = saved[IDX_SAVE_PROMPT] as Boolean,
+                    initialHasUserMovedMap = saved[IDX_MOVED] as Boolean,
+                    initialAddressManuallyEdited = saved[IDX_EDITED] as Boolean,
+                )
+            },
+        )
     }
 }
 
 /**
- * 全屏交互式地图手动选点对话框。
- * - 底图采用 GCJ-02 高密度中文瓦片 + 纯 Canvas 无约束拼接与父瓦片垫底渲染，消除缩放十字撕裂与模糊；
- * - 全屏容器接入 `.imePadding()`，确保软键盘弹起时底部位置描述输入框完整可见。
+ * 地图覆盖层在软键盘弹起或小屏环境下的自适应折叠策略。
+ */
+internal data class MapOverlayCollapseSpec(
+    val collapseTopSearchControls: Boolean,
+    val collapseBottomConfirmControls: Boolean,
+    val ultraCompact: Boolean,
+)
+
+internal fun resolveMapOverlayCollapseSpec(
+    availableHeightDp: Float,
+    isImeOpen: Boolean,
+    isSearchFocused: Boolean,
+    isAddressFocused: Boolean,
+): MapOverlayCollapseSpec {
+    val constrained = isImeOpen || availableHeightDp < COMPACT_VIEWPORT_HEIGHT_DP
+    val ultraCompact = availableHeightDp < ULTRA_COMPACT_VIEWPORT_HEIGHT_DP
+    return when {
+        isAddressFocused && constrained -> MapOverlayCollapseSpec(
+            collapseTopSearchControls = true,
+            collapseBottomConfirmControls = false,
+            ultraCompact = ultraCompact,
+        )
+
+        isSearchFocused && constrained -> MapOverlayCollapseSpec(
+            collapseTopSearchControls = false,
+            collapseBottomConfirmControls = true,
+            ultraCompact = ultraCompact,
+        )
+
+        else -> MapOverlayCollapseSpec(
+            collapseTopSearchControls = false,
+            collapseBottomConfirmControls = false,
+            ultraCompact = ultraCompact,
+        )
+    }
+}
+
+/**
+ * 全屏交互式地图手动选点覆盖层（挂载于宿主 Activity 窗口层级内）：
+ * - 直接复用宿主窗口 `enableEdgeToEdge()` 与 `adjustResize`，并使用 `navigationBars.union(ime)` 消除双重底部间距；
+ * - 针对顶部搜索与底部位置描述焦点动态折叠非焦点区域，防止软键盘弹起时地图或确认面板被挤压截断；
+ * - 统一协调多指缩放与单指点击/双击手势，消除双指松手瞬间选点漂移与点击误触。
  */
 @Composable
 internal fun ChaoxingMapPickerDialog(
@@ -194,21 +328,36 @@ internal fun ChaoxingMapPickerDialog(
     onConfirmSelection: (bd09Point: GeoPoint, address: String) -> Unit,
     onSaveAsPresetAndSelect: (title: String, bd09Point: GeoPoint, address: String) -> Unit,
     onDismiss: () -> Unit,
+    onDismissSearchResults: () -> Unit = { onSearchQueryChange("", null) },
+    isLocationPermanentlyDenied: Boolean = false,
+    onOpenAppSettings: (() -> Unit)? = null,
 ) {
-    val viewport = remember(initialBd09Point, targetBd09Point, fallbackBd09Point) {
+    val viewport = rememberSaveable(saver = MapViewportHolder.Saver) {
         val start = resolveInitialCenterSpec(initialBd09Point, targetBd09Point, fallbackBd09Point)
         MapViewportHolder(start.first, start.second, initialAddress)
     }
 
+    var isSearchFocused by remember { mutableStateOf(false) }
+    var isAddressFocused by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+
+    BackHandler(enabled = !viewport.showSavePresetPrompt) {
+        if (searchResults.isNotEmpty()) {
+            focusManager.clearFocus()
+            onDismissSearchResults()
+        } else {
+            focusManager.clearFocus()
+            onDismiss()
+        }
+    }
+
     MapPickerSideEffects(
-        centerGcj = viewport.centerGcj,
-        hasConfirmedLocation = viewport.hasConfirmedLocation,
+        viewport = viewport,
+        isAddressFocused = isAddressFocused,
         jumpCommand = jumpCommand,
         reverseGeocodedAddress = reverseGeocodedAddress,
         autoLocateOnOpen = initialBd09Point == null && targetBd09Point == null,
         autoSearchKeyword = requiredLocationHint?.takeIf { initialBd09Point == null && targetBd09Point == null },
-        onJumpToPlace = { viewport.applyPlace(it) },
-        onAddressResolved = { viewport.addressText = it },
         onRequestCurrentLocation = onRequestCurrentLocation,
         onReverseGeocodeCenter = onReverseGeocodeCenter,
         onQuickLocateKeyword = { keyword ->
@@ -216,33 +365,38 @@ internal fun ChaoxingMapPickerDialog(
         },
     )
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
-        MapPickerScaffoldContent(
-            viewport = viewport,
-            targetBd09 = targetBd09Point,
-            targetRangeMeters = targetRangeMeters,
-            requiredLocationHint = requiredLocationHint,
-            searchQuery = searchQuery,
-            isSearching = isSearching,
-            hasCompletedSearch = hasCompletedSearch,
-            searchResults = searchResults,
-            isLocatingCurrent = isLocatingCurrent,
-            statusMessage = statusMessage,
-            onSearchQueryChange = { q ->
-                onSearchQueryChange(q, viewport.centerGcj.takeIf { viewport.hasConfirmedLocation })
-            },
-            onExecuteSearch = { q, jumpFirst ->
-                onExecuteSearch(q, viewport.centerGcj.takeIf { viewport.hasConfirmedLocation }, jumpFirst)
-            },
-            onConfirmSelection = onConfirmSelection,
-            onSaveAsPresetAndSelect = onSaveAsPresetAndSelect,
-            onRequestCurrentLocation = onRequestCurrentLocation,
-            onDismiss = onDismiss,
-        )
-    }
+    MapPickerOverlaySurface(
+        viewport = viewport,
+        targetBd09 = targetBd09Point,
+        targetRangeMeters = targetRangeMeters,
+        requiredLocationHint = requiredLocationHint,
+        searchQuery = searchQuery,
+        isSearching = isSearching,
+        hasCompletedSearch = hasCompletedSearch,
+        searchResults = searchResults,
+        isLocatingCurrent = isLocatingCurrent,
+        statusMessage = statusMessage,
+        isSearchFocused = isSearchFocused,
+        isAddressFocused = isAddressFocused,
+        isLocationPermanentlyDenied = isLocationPermanentlyDenied,
+        onSearchFocusChange = { isSearchFocused = it },
+        onAddressFocusChange = { isAddressFocused = it },
+        onSearchQueryChange = { q ->
+            onSearchQueryChange(q, viewport.centerGcj.takeIf { viewport.hasConfirmedLocation })
+        },
+        onExecuteSearch = { q, jumpFirst ->
+            onExecuteSearch(q, viewport.centerGcj.takeIf { viewport.hasConfirmedLocation }, jumpFirst)
+        },
+        onDismissSearchResults = onDismissSearchResults,
+        onConfirmSelection = onConfirmSelection,
+        onSaveAsPresetAndSelect = onSaveAsPresetAndSelect,
+        onRequestCurrentLocation = onRequestCurrentLocation,
+        onOpenAppSettings = onOpenAppSettings,
+        onDismiss = {
+            focusManager.clearFocus()
+            onDismiss()
+        },
+    )
 }
 
 private fun resolveInitialCenterSpec(
@@ -258,45 +412,46 @@ private fun resolveInitialCenterSpec(
 
 @Composable
 private fun MapPickerSideEffects(
-    centerGcj: GeoPoint,
-    hasConfirmedLocation: Boolean,
+    viewport: MapViewportHolder,
+    isAddressFocused: Boolean,
     jumpCommand: MapJumpCommand?,
     reverseGeocodedAddress: String?,
     autoLocateOnOpen: Boolean,
     autoSearchKeyword: String?,
-    onJumpToPlace: (ResolvedPlace) -> Unit,
-    onAddressResolved: (String) -> Unit,
     onRequestCurrentLocation: () -> Unit,
     onReverseGeocodeCenter: (Double, Double) -> Unit,
     onQuickLocateKeyword: (String) -> Unit,
 ) {
+    val currentAddressFocused by rememberUpdatedState(isAddressFocused)
     LaunchedEffect(jumpCommand?.sequence) {
         if (jumpCommand != null) {
-            onJumpToPlace(jumpCommand.place)
+            viewport.applyPlace(jumpCommand.place)
         }
     }
     LaunchedEffect(reverseGeocodedAddress) {
         if (!reverseGeocodedAddress.isNullOrBlank()) {
-            onAddressResolved(reverseGeocodedAddress)
+            viewport.applyReverseGeocodedAddressIfEligible(reverseGeocodedAddress, currentAddressFocused)
         }
     }
-    LaunchedEffect(centerGcj, hasConfirmedLocation) {
-        if (hasConfirmedLocation) {
+    val shouldReverseGeocode = viewport.hasConfirmedLocation &&
+        (viewport.hasUserMovedMap || viewport.addressText.isBlank())
+    LaunchedEffect(viewport.centerGcj, shouldReverseGeocode) {
+        if (shouldReverseGeocode) {
             delay(REVERSE_GEOCODE_DEBOUNCE_MS)
-            onReverseGeocodeCenter(centerGcj.latitude, centerGcj.longitude)
+            onReverseGeocodeCenter(viewport.centerGcj.latitude, viewport.centerGcj.longitude)
         }
     }
     LaunchedEffect(Unit) {
         if (!autoSearchKeyword.isNullOrBlank()) {
             onQuickLocateKeyword(autoSearchKeyword)
-        } else if (autoLocateOnOpen) {
+        } else if (autoLocateOnOpen && !viewport.hasConfirmedLocation) {
             onRequestCurrentLocation()
         }
     }
 }
 
 @Composable
-private fun MapPickerScaffoldContent(
+private fun MapPickerOverlaySurface(
     viewport: MapViewportHolder,
     targetBd09: GeoPoint?,
     targetRangeMeters: Int?,
@@ -307,20 +462,27 @@ private fun MapPickerScaffoldContent(
     searchResults: List<ResolvedPlace>,
     isLocatingCurrent: Boolean,
     statusMessage: String?,
+    isSearchFocused: Boolean,
+    isAddressFocused: Boolean,
+    isLocationPermanentlyDenied: Boolean,
+    onSearchFocusChange: (Boolean) -> Unit,
+    onAddressFocusChange: (Boolean) -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onExecuteSearch: (String, Boolean) -> Unit,
+    onDismissSearchResults: () -> Unit,
     onConfirmSelection: (GeoPoint, String) -> Unit,
     onSaveAsPresetAndSelect: (String, GeoPoint, String) -> Unit,
     onRequestCurrentLocation: () -> Unit,
+    onOpenAppSettings: (() -> Unit)?,
     onDismiss: () -> Unit,
 ) {
+    val density = LocalDensity.current
+    val isImeOpen = WindowInsets.ime.getBottom(density) > 0
     val currentBd09 = remember(viewport.centerGcj) {
         CoordinateConverter.gcj02ToBd09(viewport.centerGcj.latitude, viewport.centerGcj.longitude)
     }
-    val targetGcj = remember(targetBd09) {
-        targetBd09?.let { CoordinateConverter.bd09ToGcj02(it.latitude, it.longitude) }
-    }
-    if (viewport.showSavePresetPrompt) {
+
+    if (viewport.showSavePresetPrompt && viewport.hasConfirmedLocation) {
         SavePresetNameDialog(
             initialTitle = viewport.addressText.trim().ifBlank { requiredLocationHint.orEmpty() },
             onConfirm = { title ->
@@ -331,54 +493,135 @@ private fun MapPickerScaffoldContent(
         )
     }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(MAP_OVERLAY_Z_INDEX),
+        color = MaterialTheme.colorScheme.background,
+    ) {
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .imePadding(),
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
         ) {
-            MapPickerTopSearchSection(
-                searchQuery = searchQuery,
-                satelliteMode = viewport.satelliteMode,
-                isSearching = isSearching,
-                hasCompletedSearch = hasCompletedSearch,
-                hasSearchResults = searchResults.isNotEmpty(),
-                requiredLocationHint = requiredLocationHint,
-                statusMessage = statusMessage,
-                onSearchQueryChange = onSearchQueryChange,
-                onExecuteSearch = { onExecuteSearch(searchQuery, false) },
-                onQuickSearchRequired = { hint ->
-                    onSearchQueryChange(hint)
-                    onExecuteSearch(hint, true)
-                },
-                onToggleLayer = { viewport.satelliteMode = !viewport.satelliteMode },
-                onDismiss = onDismiss,
+            val collapseSpec = resolveMapOverlayCollapseSpec(
+                availableHeightDp = maxHeight.value,
+                isImeOpen = isImeOpen,
+                isSearchFocused = isSearchFocused,
+                isAddressFocused = isAddressFocused,
             )
-
-            MapViewportLayerBox(
+            MapPickerOverlayColumns(
                 viewport = viewport,
-                targetGcj = targetGcj,
-                targetRangeMeters = targetRangeMeters,
-                searchResults = searchResults,
-                isLocatingCurrent = isLocatingCurrent,
-                onClearSearchQuery = { onSearchQueryChange("") },
-                onRequestCurrentLocation = onRequestCurrentLocation,
-                modifier = Modifier.weight(1f),
-            )
-
-            MapPickerBottomConfirmPanel(
-                selectedBd09 = currentBd09,
-                hasConfirmedLocation = viewport.hasConfirmedLocation,
+                currentBd09 = currentBd09,
                 targetBd09 = targetBd09,
                 targetRangeMeters = targetRangeMeters,
-                addressText = viewport.addressText,
-                onAddressChange = { viewport.addressText = it },
-                onOpenSavePreset = { viewport.showSavePresetPrompt = true },
-                onConfirm = { onConfirmSelection(currentBd09, viewport.addressText.trim()) },
+                requiredLocationHint = requiredLocationHint,
+                searchQuery = searchQuery,
+                isSearching = isSearching,
+                hasCompletedSearch = hasCompletedSearch,
+                searchResults = searchResults,
+                isLocatingCurrent = isLocatingCurrent,
+                statusMessage = statusMessage,
+                hasActiveInputFocus = isSearchFocused || isAddressFocused,
+                isLocationPermanentlyDenied = isLocationPermanentlyDenied,
+                collapseSpec = collapseSpec,
+                maxBottomPanelHeight = (maxHeight * 0.68f).coerceAtLeast(156.dp),
+                onSearchFocusChange = onSearchFocusChange,
+                onAddressFocusChange = onAddressFocusChange,
+                onSearchQueryChange = onSearchQueryChange,
+                onExecuteSearch = onExecuteSearch,
+                onDismissSearchResults = onDismissSearchResults,
+                onConfirmSelection = onConfirmSelection,
+                onRequestCurrentLocation = onRequestCurrentLocation,
+                onOpenAppSettings = onOpenAppSettings,
+                onDismiss = onDismiss,
             )
         }
+    }
+}
+
+@Composable
+private fun MapPickerOverlayColumns(
+    viewport: MapViewportHolder,
+    currentBd09: GeoPoint,
+    targetBd09: GeoPoint?,
+    targetRangeMeters: Int?,
+    requiredLocationHint: String?,
+    searchQuery: String,
+    isSearching: Boolean,
+    hasCompletedSearch: Boolean,
+    searchResults: List<ResolvedPlace>,
+    isLocatingCurrent: Boolean,
+    statusMessage: String?,
+    hasActiveInputFocus: Boolean,
+    isLocationPermanentlyDenied: Boolean,
+    collapseSpec: MapOverlayCollapseSpec,
+    maxBottomPanelHeight: Dp,
+    onSearchFocusChange: (Boolean) -> Unit,
+    onAddressFocusChange: (Boolean) -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onExecuteSearch: (String, Boolean) -> Unit,
+    onDismissSearchResults: () -> Unit,
+    onConfirmSelection: (GeoPoint, String) -> Unit,
+    onRequestCurrentLocation: () -> Unit,
+    onOpenAppSettings: (() -> Unit)?,
+    onDismiss: () -> Unit,
+) {
+    val targetGcj = remember(targetBd09) {
+        targetBd09?.let { CoordinateConverter.bd09ToGcj02(it.latitude, it.longitude) }
+    }
+    Column(modifier = Modifier.fillMaxSize()) {
+        MapPickerTopSearchSection(
+            searchQuery = searchQuery,
+            satelliteMode = viewport.satelliteMode,
+            isSearching = isSearching,
+            hasCompletedSearch = hasCompletedSearch,
+            hasSearchResults = searchResults.isNotEmpty(),
+            requiredLocationHint = requiredLocationHint,
+            statusMessage = statusMessage,
+            compactHeaderOnly = collapseSpec.collapseTopSearchControls,
+            isLocationPermanentlyDenied = isLocationPermanentlyDenied,
+            onSearchFocusChange = onSearchFocusChange,
+            onSearchQueryChange = onSearchQueryChange,
+            onExecuteSearch = { onExecuteSearch(searchQuery, false) },
+            onQuickSearchRequired = { hint ->
+                onSearchQueryChange(hint)
+                onExecuteSearch(hint, true)
+            },
+            onOpenAppSettings = onOpenAppSettings,
+            onToggleLayer = { viewport.satelliteMode = !viewport.satelliteMode },
+            onDismiss = onDismiss,
+        )
+
+        MapViewportLayerBox(
+            viewport = viewport,
+            targetGcj = targetGcj,
+            targetRangeMeters = targetRangeMeters,
+            searchResults = searchResults,
+            isLocatingCurrent = isLocatingCurrent,
+            hasActiveInputFocus = hasActiveInputFocus,
+            hideFloatingZoomControls = collapseSpec.ultraCompact,
+            onClearSearchAfterSelect = { onSearchQueryChange("") },
+            onDismissSearchResults = onDismissSearchResults,
+            onRequestCurrentLocation = onRequestCurrentLocation,
+            modifier = Modifier.weight(1f),
+        )
+
+        MapPickerBottomConfirmPanel(
+            selectedBd09 = currentBd09,
+            hasConfirmedLocation = viewport.hasConfirmedLocation,
+            targetBd09 = targetBd09,
+            targetRangeMeters = targetRangeMeters,
+            addressText = viewport.addressText,
+            collapsedSummaryOnly = collapseSpec.collapseBottomConfirmControls,
+            ultraCompact = collapseSpec.ultraCompact,
+            maxPanelHeight = maxBottomPanelHeight,
+            onAddressFocusChange = onAddressFocusChange,
+            onAddressChange = viewport::onManualAddressInput,
+            onOpenSavePreset = { viewport.showSavePresetPrompt = true },
+            onConfirm = { onConfirmSelection(currentBd09, viewport.addressText.trim()) },
+        )
     }
 }
 
@@ -389,26 +632,47 @@ private fun MapViewportLayerBox(
     targetRangeMeters: Int?,
     searchResults: List<ResolvedPlace>,
     isLocatingCurrent: Boolean,
-    onClearSearchQuery: () -> Unit,
+    hasActiveInputFocus: Boolean,
+    hideFloatingZoomControls: Boolean,
+    onClearSearchAfterSelect: () -> Unit,
+    onDismissSearchResults: () -> Unit,
     onRequestCurrentLocation: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Box(modifier = modifier) {
+    val focusManager = LocalFocusManager.current
+    val hasOverlayOrFocus = searchResults.isNotEmpty() || hasActiveInputFocus
+
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val overlayMaxHeight = (maxHeight - ToolboxSpacing.large).coerceIn(96.dp, 240.dp)
+
         InteractiveSlippyMapCanvas(
             centerGcj = viewport.centerGcj,
             zoom = viewport.zoom,
             satelliteMode = viewport.satelliteMode,
             targetGcj = targetGcj,
             targetRangeMeters = targetRangeMeters,
-            onCenterAndZoomChange = viewport::updateCenterAndZoom,
+            consumeTapToDismissOverlayOnly = hasOverlayOrFocus,
+            onDismissOverlayAndFocus = {
+                focusManager.clearFocus()
+                if (searchResults.isNotEmpty()) {
+                    onDismissSearchResults()
+                }
+            },
+            onCenterAndZoomChange = viewport::updateCenterAndZoomByUser,
         )
 
         if (searchResults.isNotEmpty()) {
             SearchResultsOverlayCard(
                 results = searchResults,
+                maxListHeight = overlayMaxHeight,
                 onSelectPlace = { place ->
+                    focusManager.clearFocus()
                     viewport.applyPlace(place, fallbackTitle = true)
-                    onClearSearchQuery()
+                    onClearSearchAfterSelect()
+                },
+                onDismissResults = {
+                    focusManager.clearFocus()
+                    onDismissSearchResults()
                 },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -416,25 +680,32 @@ private fun MapViewportLayerBox(
             )
         }
 
-        MapFloatingControls(
-            isLocatingCurrent = isLocatingCurrent,
-            onZoomIn = {
-                viewport.updateCenterAndZoom(
-                    viewport.centerGcj,
-                    (viewport.zoom + 1.0).coerceAtMost(SlippyMapProjection.MAX_ZOOM),
-                )
-            },
-            onZoomOut = {
-                viewport.updateCenterAndZoom(
-                    viewport.centerGcj,
-                    (viewport.zoom - 1.0).coerceAtLeast(SlippyMapProjection.MIN_ZOOM),
-                )
-            },
-            onLocateMe = onRequestCurrentLocation,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(ToolboxSpacing.medium),
-        )
+        if (!hideFloatingZoomControls) {
+            MapFloatingControls(
+                isLocatingCurrent = isLocatingCurrent,
+                onZoomIn = {
+                    focusManager.clearFocus()
+                    viewport.updateCenterAndZoomByUser(
+                        viewport.centerGcj,
+                        (viewport.zoom + 1.0).coerceAtMost(SlippyMapProjection.MAX_ZOOM),
+                    )
+                },
+                onZoomOut = {
+                    focusManager.clearFocus()
+                    viewport.updateCenterAndZoomByUser(
+                        viewport.centerGcj,
+                        (viewport.zoom - 1.0).coerceAtLeast(SlippyMapProjection.MIN_ZOOM),
+                    )
+                },
+                onLocateMe = {
+                    focusManager.clearFocus()
+                    onRequestCurrentLocation()
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(ToolboxSpacing.medium),
+            )
+        }
     }
 }
 
@@ -447,9 +718,13 @@ private fun MapPickerTopSearchSection(
     hasSearchResults: Boolean,
     requiredLocationHint: String?,
     statusMessage: String?,
+    compactHeaderOnly: Boolean,
+    isLocationPermanentlyDenied: Boolean,
+    onSearchFocusChange: (Boolean) -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onExecuteSearch: () -> Unit,
     onQuickSearchRequired: (String) -> Unit,
+    onOpenAppSettings: (() -> Unit)?,
     onToggleLayer: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -469,51 +744,68 @@ private fun MapPickerTopSearchSection(
             verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.extraSmall),
         ) {
             MapPickerHeaderBar(satelliteMode = satelliteMode, onToggleLayer = onToggleLayer, onDismiss = onDismiss)
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = onSearchQueryChange,
-                placeholder = { Text(text = "搜索学校、教学楼或地标名称") },
-                leadingIcon = { Icon(imageVector = Icons.Outlined.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        SearchInputTrailingActions(
-                            onClear = { onSearchQueryChange("") },
-                            onSearch = {
-                                focusManager.clearFocus()
-                                onExecuteSearch()
-                            },
-                        )
-                    }
-                },
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                keyboardActions = KeyboardActions(
-                    onSearch = {
+            if (!compactHeaderOnly) {
+                MapSearchTextField(
+                    searchQuery = searchQuery,
+                    onSearchFocusChange = onSearchFocusChange,
+                    onSearchQueryChange = onSearchQueryChange,
+                    onExecuteSearch = {
                         focusManager.clearFocus()
                         onExecuteSearch()
                     },
-                ),
-                singleLine = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = ToolboxSpacing.extraSmall),
-            )
-            if (!requiredLocationHint.isNullOrBlank()) {
-                RequiredLocationQuickRow(
-                    hint = requiredLocationHint,
-                    onQuickSearch = {
-                        focusManager.clearFocus()
-                        onQuickSearchRequired(requiredLocationHint)
-                    },
                 )
-            }
-            if (!bannerHint.isNullOrBlank()) {
-                SearchWarningBanner(message = bannerHint)
-            }
-            if (isSearching) {
-                ToolboxLinearProgressBar()
+                if (!requiredLocationHint.isNullOrBlank()) {
+                    RequiredLocationQuickRow(
+                        hint = requiredLocationHint,
+                        onQuickSearch = {
+                            focusManager.clearFocus()
+                            onQuickSearchRequired(requiredLocationHint)
+                        },
+                    )
+                }
+                if (!bannerHint.isNullOrBlank()) {
+                    SearchWarningBanner(
+                        message = bannerHint,
+                        actionLabel = if (isLocationPermanentlyDenied && onOpenAppSettings != null) "前往设置" else null,
+                        onAction = onOpenAppSettings,
+                    )
+                }
+                if (isSearching) {
+                    ToolboxLinearProgressBar()
+                }
             }
         }
     }
+}
+
+@Composable
+private fun MapSearchTextField(
+    searchQuery: String,
+    onSearchFocusChange: (Boolean) -> Unit,
+    onSearchQueryChange: (String) -> Unit,
+    onExecuteSearch: () -> Unit,
+) {
+    OutlinedTextField(
+        value = searchQuery,
+        onValueChange = onSearchQueryChange,
+        placeholder = { Text(text = "搜索学校、教学楼或地标名称") },
+        leadingIcon = { Icon(imageVector = Icons.Outlined.Search, contentDescription = null) },
+        trailingIcon = {
+            if (searchQuery.isNotEmpty()) {
+                SearchInputTrailingActions(
+                    onClear = { onSearchQueryChange("") },
+                    onSearch = onExecuteSearch,
+                )
+            }
+        },
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardActions = KeyboardActions(onSearch = { onExecuteSearch() }),
+        singleLine = true,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = ToolboxSpacing.extraSmall)
+            .onFocusChanged { onSearchFocusChange(it.isFocused) },
+    )
 }
 
 @Composable
@@ -543,7 +835,7 @@ private fun resolveSearchBannerHint(
 }
 
 @Composable
-private fun SearchWarningBanner(message: String) {
+private fun SearchWarningBanner(message: String, actionLabel: String? = null, onAction: (() -> Unit)? = null) {
     Surface(
         color = ToolboxTheme.extendedColors.warningContainer,
         shape = RoundedCornerShape(ToolboxRadius.chip),
@@ -551,15 +843,23 @@ private fun SearchWarningBanner(message: String) {
             .fillMaxWidth()
             .padding(horizontal = ToolboxSpacing.extraSmall),
     ) {
-        Text(
-            text = message,
-            color = ToolboxTheme.extendedColors.onWarningContainer,
-            style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(
-                horizontal = ToolboxSpacing.small,
-                vertical = ToolboxSpacing.extraSmall,
-            ),
-        )
+        Row(
+            modifier = Modifier.padding(horizontal = ToolboxSpacing.small, vertical = ToolboxSpacing.extraSmall),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = message,
+                color = ToolboxTheme.extendedColors.onWarningContainer,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
+            )
+            if (!actionLabel.isNullOrBlank() && onAction != null) {
+                TextButton(onClick = onAction) {
+                    Text(text = actionLabel, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
     }
 }
 
@@ -609,11 +909,13 @@ private fun InteractiveSlippyMapCanvas(
     satelliteMode: Boolean,
     targetGcj: GeoPoint?,
     targetRangeMeters: Int?,
+    consumeTapToDismissOverlayOnly: Boolean,
+    onDismissOverlayAndFocus: () -> Unit,
     onCenterAndZoomChange: (GeoPoint, Double) -> Unit,
 ) {
     val density = LocalDensity.current
     val baseTilePx = with(density) { SlippyMapProjection.BASE_TILE_DP.dp.toPx().toDouble() }
-    val focusManager = LocalFocusManager.current
+    val doubleTapSlopPx = with(density) { DOUBLE_TAP_SLOP_DP.dp.toPx() }
     val tileCache = remember { TileBitmapCache() }
 
     BoxWithConstraints(
@@ -642,13 +944,15 @@ private fun InteractiveSlippyMapCanvas(
         Canvas(
             modifier = Modifier
                 .fillMaxSize()
-                .mapGestureModifier(
+                .unifiedMapGestureModifier(
                     centerGcj = centerGcj,
                     zoom = zoom,
                     baseTilePx = baseTilePx,
                     viewportWidthPx = viewportWidthPx,
                     viewportHeightPx = viewportHeightPx,
-                    onClearFocus = { focusManager.clearFocus() },
+                    doubleTapSlopPx = doubleTapSlopPx,
+                    consumeTapToDismissOverlayOnly = consumeTapToDismissOverlayOnly,
+                    onDismissOverlayAndFocus = onDismissOverlayAndFocus,
                     onCenterAndZoomChange = onCenterAndZoomChange,
                 ),
         ) {
@@ -810,69 +1114,196 @@ private fun DrawScope.drawTargetRangeOverlay(
     drawCircle(color = primaryColor, radius = 6.dp.toPx(), center = targetOffset)
 }
 
+private class MapGestureRuntimeCallbacks(
+    val centerProvider: () -> GeoPoint,
+    val zoomProvider: () -> Double,
+    val dismissOverlayOnlyProvider: () -> Boolean,
+    val onDismissOverlay: () -> Unit,
+    val onTransform: (GeoPoint, Double) -> Unit,
+)
+
 @Composable
-private fun Modifier.mapGestureModifier(
+private fun Modifier.unifiedMapGestureModifier(
     centerGcj: GeoPoint,
     zoom: Double,
     baseTilePx: Double,
     viewportWidthPx: Float,
     viewportHeightPx: Float,
-    onClearFocus: () -> Unit,
+    doubleTapSlopPx: Float,
+    consumeTapToDismissOverlayOnly: Boolean,
+    onDismissOverlayAndFocus: () -> Unit,
     onCenterAndZoomChange: (GeoPoint, Double) -> Unit,
 ): Modifier {
     val currentCenter by rememberUpdatedState(centerGcj)
     val currentZoom by rememberUpdatedState(zoom)
-    return this
-        .pointerInput(baseTilePx, viewportWidthPx, viewportHeightPx) {
-            detectTransformGestures { centroid, pan, gestureZoom, _ ->
-                onClearFocus()
-                val nextZoom = (currentZoom + ln(gestureZoom.toDouble()) / ln(2.0))
-                    .coerceIn(SlippyMapProjection.MIN_ZOOM, SlippyMapProjection.MAX_ZOOM)
-                val nextCenter = SlippyMapProjection.transformViewport(
-                    center = currentCenter,
-                    currentZoom = currentZoom,
-                    nextZoom = nextZoom,
+    val currentDismissOverlayOnly by rememberUpdatedState(consumeTapToDismissOverlayOnly)
+    val currentOnDismissOverlay by rememberUpdatedState(onDismissOverlayAndFocus)
+    val currentOnTransform by rememberUpdatedState(onCenterAndZoomChange)
+    val callbacks = remember {
+        MapGestureRuntimeCallbacks(
+            centerProvider = { currentCenter },
+            zoomProvider = { currentZoom },
+            dismissOverlayOnlyProvider = { currentDismissOverlayOnly },
+            onDismissOverlay = { currentOnDismissOverlay() },
+            onTransform = { nextCenter, nextZoom -> currentOnTransform(nextCenter, nextZoom) },
+        )
+    }
+
+    return this.pointerInput(baseTilePx, viewportWidthPx, viewportHeightPx, doubleTapSlopPx) {
+        detectUnifiedMapGestures(
+            baseTilePx = baseTilePx,
+            viewportWidthPx = viewportWidthPx,
+            viewportHeightPx = viewportHeightPx,
+            doubleTapSlopPx = doubleTapSlopPx,
+            callbacks = callbacks,
+        )
+    }
+}
+
+private suspend fun androidx.compose.ui.input.pointer.PointerInputScope.detectUnifiedMapGestures(
+    baseTilePx: Double,
+    viewportWidthPx: Float,
+    viewportHeightPx: Float,
+    doubleTapSlopPx: Float,
+    callbacks: MapGestureRuntimeCallbacks,
+) = coroutineScope {
+    var pendingSingleTapJob: Job? = null
+    var lastCleanTapTimeMs = 0L
+    var lastCleanTapOffset = Offset.Zero
+
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        val tracker = MapGestureSessionTracker(touchSlopPx = viewConfiguration.touchSlop)
+        tracker.onFrame(
+            pointers = listOf(MapPointerSample(down.id.value, down.position, down.position, down.pressed)),
+            anyConsumedExternally = down.isConsumed,
+        )
+
+        val isSecondTapCandidate = pendingSingleTapJob?.isActive == true &&
+            (down.uptimeMillis - lastCleanTapTimeMs) <= viewConfiguration.doubleTapTimeoutMillis &&
+            (down.position - lastCleanTapOffset).getDistance() <= doubleTapSlopPx
+        if (isSecondTapCandidate) {
+            pendingSingleTapJob?.cancel()
+        }
+
+        var lastUpOffset = down.position
+        var lastUpTimeMs = down.uptimeMillis
+        do {
+            val event = awaitPointerEvent()
+            val anyExternalConsume = event.changes.any { it.isConsumed }
+            val samples = event.changes.map { ch ->
+                if (!ch.pressed) {
+                    lastUpOffset = ch.position
+                    lastUpTimeMs = ch.uptimeMillis
+                }
+                MapPointerSample(ch.id.value, ch.previousPosition, ch.position, ch.pressed)
+            }
+            val outcome = tracker.onFrame(samples, anyExternalConsume)
+            if (tracker.hasTransformed || tracker.hadMultiTouch) {
+                pendingSingleTapJob?.cancel()
+                callbacks.onDismissOverlay()
+                event.changes.forEach { ch -> if (ch.position != ch.previousPosition) ch.consume() }
+            }
+            if (outcome is MapGestureFrameOutcome.Transform) {
+                applyGestureTransformFrame(
+                    outcome = outcome,
                     baseTilePx = baseTilePx,
                     viewportWidthPx = viewportWidthPx,
                     viewportHeightPx = viewportHeightPx,
-                    centroid = centroid,
-                    pan = pan,
+                    callbacks = callbacks,
                 )
-                onCenterAndZoomChange(nextCenter, nextZoom)
             }
-        }
-        .pointerInput(baseTilePx, viewportWidthPx, viewportHeightPx) {
-            detectTapGestures(
-                onTap = { tapOffset ->
-                    onClearFocus()
-                    val dx = tapOffset.x - viewportWidthPx / 2f
-                    val dy = tapOffset.y - viewportHeightPx / 2f
-                    val nextCenter = SlippyMapProjection.panByPixels(
-                        center = currentCenter,
-                        zoom = currentZoom,
-                        baseTilePx = baseTilePx,
-                        deltaXPx = -dx.toDouble(),
-                        deltaYPx = -dy.toDouble(),
-                    )
-                    onCenterAndZoomChange(nextCenter, currentZoom)
-                },
-                onDoubleTap = { tapOffset ->
-                    onClearFocus()
-                    val nextZoom = (currentZoom + 1.0).coerceAtMost(SlippyMapProjection.MAX_ZOOM)
-                    val nextCenter = SlippyMapProjection.transformViewport(
-                        center = currentCenter,
-                        currentZoom = currentZoom,
-                        nextZoom = nextZoom,
-                        baseTilePx = baseTilePx,
-                        viewportWidthPx = viewportWidthPx,
-                        viewportHeightPx = viewportHeightPx,
-                        centroid = tapOffset,
-                        pan = androidx.compose.ui.geometry.Offset.Zero,
-                    )
-                    onCenterAndZoomChange(nextCenter, nextZoom)
-                },
+        } while (event.changes.any { it.pressed })
+
+        if (tracker.canTriggerCleanSingleTap()) {
+            val tapUpdate = dispatchCleanTapOutcome(
+                scope = this@coroutineScope,
+                isSecondTapCandidate = isSecondTapCandidate,
+                upOffset = lastUpOffset,
+                upTimeMs = lastUpTimeMs,
+                doubleTapWaitMs = viewConfiguration.doubleTapTimeoutMillis,
+                baseTilePx = baseTilePx,
+                viewportWidthPx = viewportWidthPx,
+                viewportHeightPx = viewportHeightPx,
+                callbacks = callbacks,
             )
+            lastCleanTapTimeMs = tapUpdate.first
+            lastCleanTapOffset = tapUpdate.second
+            pendingSingleTapJob = tapUpdate.third
         }
+    }
+}
+
+private fun applyGestureTransformFrame(
+    outcome: MapGestureFrameOutcome.Transform,
+    baseTilePx: Double,
+    viewportWidthPx: Float,
+    viewportHeightPx: Float,
+    callbacks: MapGestureRuntimeCallbacks,
+) {
+    val curZoom = callbacks.zoomProvider()
+    val nextZoom = (curZoom + ln(outcome.zoomFactor.toDouble()) / ln(2.0))
+        .coerceIn(SlippyMapProjection.MIN_ZOOM, SlippyMapProjection.MAX_ZOOM)
+    val nextCenter = SlippyMapProjection.transformViewport(
+        center = callbacks.centerProvider(),
+        currentZoom = curZoom,
+        nextZoom = nextZoom,
+        baseTilePx = baseTilePx,
+        viewportWidthPx = viewportWidthPx,
+        viewportHeightPx = viewportHeightPx,
+        centroid = outcome.centroid,
+        pan = outcome.pan,
+    )
+    callbacks.onTransform(nextCenter, nextZoom)
+}
+
+@Suppress("LongParameterList")
+private fun dispatchCleanTapOutcome(
+    scope: kotlinx.coroutines.CoroutineScope,
+    isSecondTapCandidate: Boolean,
+    upOffset: Offset,
+    upTimeMs: Long,
+    doubleTapWaitMs: Long,
+    baseTilePx: Double,
+    viewportWidthPx: Float,
+    viewportHeightPx: Float,
+    callbacks: MapGestureRuntimeCallbacks,
+): Triple<Long, Offset, Job?> {
+    if (callbacks.dismissOverlayOnlyProvider()) {
+        callbacks.onDismissOverlay()
+        return Triple(0L, Offset.Zero, null)
+    }
+    if (isSecondTapCandidate) {
+        val curZoom = callbacks.zoomProvider()
+        val nextZoom = (curZoom + 1.0).coerceAtMost(SlippyMapProjection.MAX_ZOOM)
+        val nextCenter = SlippyMapProjection.transformViewport(
+            center = callbacks.centerProvider(),
+            currentZoom = curZoom,
+            nextZoom = nextZoom,
+            baseTilePx = baseTilePx,
+            viewportWidthPx = viewportWidthPx,
+            viewportHeightPx = viewportHeightPx,
+            centroid = upOffset,
+            pan = Offset.Zero,
+        )
+        callbacks.onTransform(nextCenter, nextZoom)
+        return Triple(0L, Offset.Zero, null)
+    }
+    val delayedJob = scope.launch {
+        delay(doubleTapWaitMs)
+        val dx = upOffset.x - viewportWidthPx / 2f
+        val dy = upOffset.y - viewportHeightPx / 2f
+        val curZoom = callbacks.zoomProvider()
+        val nextCenter = SlippyMapProjection.panByPixels(
+            center = callbacks.centerProvider(),
+            zoom = curZoom,
+            baseTilePx = baseTilePx,
+            deltaXPx = -dx.toDouble(),
+            deltaYPx = -dy.toDouble(),
+        )
+        callbacks.onTransform(nextCenter, curZoom)
+    }
+    return Triple(upTimeMs, upOffset, delayedJob)
 }
 
 @Composable
@@ -898,51 +1329,73 @@ private fun CenterPinMarker(modifier: Modifier = Modifier) {
 @Composable
 private fun SearchResultsOverlayCard(
     results: List<ResolvedPlace>,
+    maxListHeight: Dp,
     onSelectPlace: (ResolvedPlace) -> Unit,
+    onDismissResults: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val focusManager = LocalFocusManager.current
     ElevatedCard(modifier = modifier.fillMaxWidth()) {
-        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
-            items(results) { item ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            focusManager.clearFocus()
-                            onSelectPlace(item)
-                        }
-                        .padding(horizontal = ToolboxSpacing.medium, vertical = ToolboxSpacing.small),
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.extraSmall),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Place,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(
-                            text = item.title,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    if (item.address.isNotBlank() && item.address != item.title) {
-                        Text(
-                            text = item.address,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = ToolboxSpacing.medium, end = ToolboxSpacing.extraSmall),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "搜索候选（${results.size}）",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = onDismissResults) {
+                    Text(text = "收起")
                 }
-                HorizontalDivider()
             }
+            HorizontalDivider()
+            LazyColumn(modifier = Modifier.heightIn(max = maxListHeight)) {
+                items(results) { item ->
+                    SearchResultCandidateRow(item = item, onSelect = { onSelectPlace(item) })
+                    HorizontalDivider()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchResultCandidateRow(item: ResolvedPlace, onSelect: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onSelect)
+            .padding(horizontal = ToolboxSpacing.medium, vertical = ToolboxSpacing.small),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.extraSmall),
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Place,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (item.address.isNotBlank() && item.address != item.title) {
+            Text(
+                text = item.address,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
@@ -987,10 +1440,23 @@ private fun MapPickerBottomConfirmPanel(
     targetBd09: GeoPoint?,
     targetRangeMeters: Int?,
     addressText: String,
+    collapsedSummaryOnly: Boolean,
+    ultraCompact: Boolean,
+    maxPanelHeight: Dp,
+    onAddressFocusChange: (Boolean) -> Unit,
     onAddressChange: (String) -> Unit,
     onOpenSavePreset: () -> Unit,
     onConfirm: () -> Unit,
 ) {
+    val focusManager = LocalFocusManager.current
+    val coordStatusText = formatBottomCoordinateLabel(
+        selectedBd09 = selectedBd09,
+        hasConfirmedLocation = hasConfirmedLocation,
+        targetBd09 = targetBd09,
+        targetRangeMeters = targetRangeMeters,
+    )
+    val panelPadding = if (ultraCompact || collapsedSummaryOnly) ToolboxSpacing.small else ToolboxSpacing.medium
+
     Surface(
         tonalElevation = 3.dp,
         shape = RoundedCornerShape(topStart = ToolboxRadius.card, topEnd = ToolboxRadius.card),
@@ -998,58 +1464,96 @@ private fun MapPickerBottomConfirmPanel(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(ToolboxSpacing.medium),
+                .heightIn(max = maxPanelHeight)
+                .verticalScroll(rememberScrollState())
+                .padding(panelPadding),
             verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
         ) {
-            val coordLabel = if (hasConfirmedLocation) {
-                "已选坐标：${CoordinateConverter.formatCoordinate(selectedBd09.latitude)}, " +
-                    CoordinateConverter.formatCoordinate(selectedBd09.longitude)
-            } else {
-                "正在获取定位，也可直接搜索或拖动地图选点"
-            }
-            val distanceHint = if (hasConfirmedLocation && targetBd09 != null) {
-                val dist = CoordinateConverter.distanceMeters(selectedBd09, targetBd09).roundToInt()
-                val status = if (targetRangeMeters != null && dist <= targetRangeMeters) "范围内" else "距目标 ${dist}m"
-                " · $status"
-            } else {
-                ""
-            }
             Text(
-                text = coordLabel + distanceHint,
+                text = coordStatusText,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-            OutlinedTextField(
-                value = addressText,
-                onValueChange = onAddressChange,
-                label = { Text(text = "签到位置描述") },
-                placeholder = { Text(text = "拖动地图自动识别，或手动编辑地点名称") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
-            ) {
-                OutlinedButton(onClick = onOpenSavePreset, modifier = Modifier.weight(1f)) {
-                    Icon(
-                        imageVector = Icons.Outlined.BookmarkAdd,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Text(text = " 存为预设")
-                }
-                Button(onClick = onConfirm, modifier = Modifier.weight(1f)) {
-                    Text(text = "确认使用该地点")
+            if (!collapsedSummaryOnly) {
+                OutlinedTextField(
+                    value = addressText,
+                    onValueChange = onAddressChange,
+                    label = { Text(text = "签到位置描述") },
+                    placeholder = { Text(text = "拖动地图自动识别，或手动编辑地点名称") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { onAddressFocusChange(it.isFocused) },
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onOpenSavePreset()
+                        },
+                        enabled = hasConfirmedLocation,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.BookmarkAdd,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(text = " 存为预设")
+                    }
+                    Button(
+                        onClick = {
+                            focusManager.clearFocus()
+                            onConfirm()
+                        },
+                        enabled = hasConfirmedLocation,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(text = "确认使用该地点")
+                    }
                 }
             }
         }
     }
 }
 
+private fun formatBottomCoordinateLabel(
+    selectedBd09: GeoPoint,
+    hasConfirmedLocation: Boolean,
+    targetBd09: GeoPoint?,
+    targetRangeMeters: Int?,
+): String {
+    val coordLabel = if (hasConfirmedLocation) {
+        "已选坐标：${CoordinateConverter.formatCoordinate(selectedBd09.latitude)}, " +
+            CoordinateConverter.formatCoordinate(selectedBd09.longitude)
+    } else {
+        "正在获取定位，请搜索地点或拖动地图选点"
+    }
+    val distanceHint = if (hasConfirmedLocation && targetBd09 != null) {
+        val dist = CoordinateConverter.distanceMeters(selectedBd09, targetBd09).roundToInt()
+        val status = if (targetRangeMeters != null && dist <= targetRangeMeters) "范围内" else "距目标 ${dist}m"
+        " · $status"
+    } else {
+        ""
+    }
+    return coordLabel + distanceHint
+}
+
 @Composable
 internal fun SavePresetNameDialog(initialTitle: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
-    var titleInput by remember(initialTitle) { mutableStateOf(initialTitle) }
+    var titleInput by rememberSaveable(initialTitle) { mutableStateOf(initialTitle) }
+    val focusManager = LocalFocusManager.current
+    val submitSave = {
+        focusManager.clearFocus()
+        onConfirm(titleInput.trim().ifBlank { "常用签到地点" })
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(text = "保存预设签到地点") },
@@ -1064,13 +1568,15 @@ internal fun SavePresetNameDialog(initialTitle: String, onConfirm: (String) -> U
                     value = titleInput,
                     onValueChange = { titleInput = it },
                     label = { Text(text = "预设名称") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { submitSave() }),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(titleInput.trim().ifBlank { "常用签到地点" }) }) {
+            TextButton(onClick = submitSave) {
                 Text(text = "保存")
             }
         },

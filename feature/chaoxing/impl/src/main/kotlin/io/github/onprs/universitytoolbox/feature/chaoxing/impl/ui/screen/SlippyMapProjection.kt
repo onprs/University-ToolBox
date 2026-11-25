@@ -3,6 +3,7 @@ package io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.screen
 import androidx.compose.ui.geometry.Offset
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.GeoPoint
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.atan
 import kotlin.math.cos
 import kotlin.math.floor
@@ -196,4 +197,161 @@ internal object SlippyMapProjection {
 
     private fun buildSatelliteOverlayUrl(subdomain: Int, z: Int, x: Int, y: Int): String =
         "https://wprd0$subdomain.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=1&style=8&x=$x&y=$y&z=$z"
+}
+
+/**
+ * 单帧触点采样数据（解耦 Compose PointerInputChange 以便纯算法单测与手势协调复用）。
+ */
+internal data class MapPointerSample(
+    val pointerId: Long,
+    val previousPosition: Offset,
+    val currentPosition: Offset,
+    val pressed: Boolean,
+)
+
+internal sealed interface MapGestureFrameOutcome {
+    data object Idle : MapGestureFrameOutcome
+
+    data class Transform(val centroid: Offset, val pan: Offset, val zoomFactor: Float) : MapGestureFrameOutcome
+}
+
+/**
+ * 单次地图触摸会话协调器（从首指按下到全部手指抬起）：
+ * - 一旦出现多指触控，全程屏蔽单击/双击选点，杜绝双指轻捏松手误触点击瞬移；
+ * - 在手指增减切换帧（如 1 指变 2 指、2 指松开变 1 指）自动重锚定并跳过质心突变差分；
+ * - 双指缩放松开其中一指后，对剩余单指施加抬手防抖阈值，避免松手瞬间选点准星漂移。
+ */
+internal class MapGestureSessionTracker(private val touchSlopPx: Float) {
+    private val seenPointerIds = HashSet<Long>()
+    private var previousActiveIds: Set<Long> = emptySet()
+    private var accumulatedPan: Offset = Offset.Zero
+    private var accumulatedZoom: Float = IDENTITY_ZOOM
+    private var postPinchResidualPan: Offset = Offset.Zero
+    private var postPinchLocked: Boolean = false
+
+    var hadMultiTouch: Boolean = false
+        private set
+    var hasTransformed: Boolean = false
+        private set
+    var wasCanceled: Boolean = false
+        private set
+
+    fun onFrame(pointers: List<MapPointerSample>, anyConsumedExternally: Boolean = false): MapGestureFrameOutcome {
+        if (anyConsumedExternally) {
+            wasCanceled = true
+            return MapGestureFrameOutcome.Idle
+        }
+        val active = pointers.filter { it.pressed }
+        active.forEach { seenPointerIds.add(it.pointerId) }
+        if (active.size >= MULTI_TOUCH_COUNT || seenPointerIds.size >= MULTI_TOUCH_COUNT) {
+            hadMultiTouch = true
+        }
+        if (active.isEmpty()) {
+            previousActiveIds = emptySet()
+            return MapGestureFrameOutcome.Idle
+        }
+
+        val currentIds = active.mapTo(HashSet(active.size)) { it.pointerId }
+        if (previousActiveIds.isEmpty() || currentIds != previousActiveIds) {
+            if (previousActiveIds.size >= MULTI_TOUCH_COUNT && currentIds.size == 1) {
+                postPinchLocked = true
+                postPinchResidualPan = Offset.Zero
+            } else if (currentIds.size >= MULTI_TOUCH_COUNT) {
+                postPinchLocked = false
+            }
+            previousActiveIds = currentIds
+            return MapGestureFrameOutcome.Idle
+        }
+
+        return if (hadMultiTouch && active.size == 1 && postPinchLocked) {
+            handlePostPinchSinglePointer(active.first())
+        } else {
+            computeStableFrameOutcome(active)
+        }
+    }
+
+    fun canTriggerCleanSingleTap(): Boolean =
+        !wasCanceled && !hadMultiTouch && !hasTransformed && seenPointerIds.size == 1
+
+    private fun handlePostPinchSinglePointer(pointer: MapPointerSample): MapGestureFrameOutcome {
+        val delta = pointer.currentPosition - pointer.previousPosition
+        postPinchResidualPan += delta
+        if (postPinchResidualPan.getDistance() <= touchSlopPx * POST_PINCH_UNLOCK_MULTIPLIER) {
+            return MapGestureFrameOutcome.Idle
+        }
+        postPinchLocked = false
+        hasTransformed = true
+        return if (delta != Offset.Zero) {
+            MapGestureFrameOutcome.Transform(
+                centroid = pointer.currentPosition,
+                pan = delta,
+                zoomFactor = IDENTITY_ZOOM,
+            )
+        } else {
+            MapGestureFrameOutcome.Idle
+        }
+    }
+
+    private fun computeStableFrameOutcome(active: List<MapPointerSample>): MapGestureFrameOutcome {
+        val prevCentroid = averagePosition(active) { it.previousPosition }
+        val currCentroid = averagePosition(active) { it.currentPosition }
+        val pan = currCentroid - prevCentroid
+        val zoomFactor = if (active.size >= MULTI_TOUCH_COUNT) {
+            val prevSpan = averageSpan(active, prevCentroid) { it.previousPosition }
+            val currSpan = averageSpan(active, currCentroid) { it.currentPosition }
+            if (prevSpan >= MIN_PINCH_SPAN_PX) currSpan / prevSpan else IDENTITY_ZOOM
+        } else {
+            IDENTITY_ZOOM
+        }
+
+        if (!hasTransformed) {
+            accumulatedPan += pan
+            accumulatedZoom *= zoomFactor
+            val currSpan = if (active.size >= MULTI_TOUCH_COUNT) {
+                averageSpan(active, currCentroid) { it.currentPosition }
+            } else {
+                0f
+            }
+            val zoomMotion = abs(accumulatedZoom - IDENTITY_ZOOM) * currSpan
+            if (accumulatedPan.getDistance() > touchSlopPx || zoomMotion > touchSlopPx) {
+                hasTransformed = true
+            }
+        }
+
+        return if (hasTransformed && (pan != Offset.Zero || zoomFactor != IDENTITY_ZOOM)) {
+            MapGestureFrameOutcome.Transform(centroid = currCentroid, pan = pan, zoomFactor = zoomFactor)
+        } else {
+            MapGestureFrameOutcome.Idle
+        }
+    }
+
+    private inline fun averagePosition(items: List<MapPointerSample>, selector: (MapPointerSample) -> Offset): Offset {
+        var sumX = 0f
+        var sumY = 0f
+        items.forEach { sample ->
+            val pos = selector(sample)
+            sumX += pos.x
+            sumY += pos.y
+        }
+        return Offset(sumX / items.size, sumY / items.size)
+    }
+
+    private inline fun averageSpan(
+        items: List<MapPointerSample>,
+        centroid: Offset,
+        selector: (MapPointerSample) -> Offset,
+    ): Float {
+        var sumDist = 0f
+        items.forEach { sample ->
+            sumDist += (selector(sample) - centroid).getDistance()
+        }
+        return sumDist / items.size
+    }
+
+    companion object {
+        private const val MULTI_TOUCH_COUNT = 2
+        private const val IDENTITY_ZOOM = 1f
+        private const val MIN_PINCH_SPAN_PX = 8f
+        private const val POST_PINCH_UNLOCK_MULTIPLIER = 1.5f
+    }
 }

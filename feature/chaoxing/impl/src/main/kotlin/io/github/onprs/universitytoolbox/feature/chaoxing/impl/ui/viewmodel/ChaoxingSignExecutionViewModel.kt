@@ -244,13 +244,37 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
         }
     }
 
-    fun notifyMapPermissionDenied() {
+    fun notifyMapPermissionDenied(isPermanentlyDenied: Boolean = false) {
+        val mapMsg = if (isPermanentlyDenied) {
+            "定位权限已被拒绝，请前往系统设置开启位置权限，或直接搜索地点选点"
+        } else {
+            "尚未授予定位权限，请授权位置信息或直接搜索地点选点"
+        }
+        val formMsg = if (isPermanentlyDenied) {
+            "定位权限已被拒绝，请前往系统设置开启位置权限"
+        } else {
+            "尚未授予定位权限"
+        }
         mutableUiState.update {
             it.copy(
-                mapStatusMessage = "尚未授予定位权限，请在系统设置中授权位置信息或直接搜索地点",
-                inputHintMessage = "尚未授予定位权限",
+                mapStatusMessage = mapMsg,
+                inputHintMessage = formMsg,
             )
         }
+    }
+
+    fun dismissMapSearchResults() {
+        mapSearchJob?.cancel()
+        mutableUiState.update {
+            it.copy(
+                mapSearchResults = emptyList(),
+                isSearchingMapPlaces = false,
+            )
+        }
+    }
+
+    fun notifyPhotoLoadFailed(message: String = "无法读取所选图片，请重新选择清晰有效的照片") {
+        mutableUiState.update { it.copy(inputHintMessage = message) }
     }
 
     fun updateSignCode(code: String) {
@@ -449,7 +473,7 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
                 } else {
                     null
                 }
-                val visibleCandidates = if (places.size == 1 && shouldJump) emptyList() else places
+                val visibleCandidates = if (shouldJump) emptyList() else places
                 mutableUiState.update { current ->
                     current.copy(
                         isSearchingMapPlaces = false,
@@ -473,6 +497,7 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
 
     fun reverseGeocodeMapCenter(gcjLatitude: Double, gcjLongitude: Double) {
         reverseGeocodeJob?.cancel()
+        mutableUiState.update { it.copy(mapReverseGeocodedAddress = null) }
         reverseGeocodeJob = viewModelScope.launch {
             val address = locationService.reverseGeocodeGcj02(gcjLatitude, gcjLongitude)
             if (!address.isNullOrBlank()) {
@@ -497,6 +522,17 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
         if (current.isExecuting || current.selectedAccountIds.isEmpty()) {
             return
         }
+        val trimmedLat = current.latitudeInput.trim()
+        val trimmedLng = current.longitudeInput.trim()
+        val parsedLat = trimmedLat.toDoubleOrNull()
+        val parsedLng = trimmedLng.toDoubleOrNull()
+        val hasMalformedCoord = (trimmedLat.isNotBlank() && parsedLat == null) ||
+            (trimmedLng.isNotBlank() && parsedLng == null)
+        if (hasMalformedCoord) {
+            mutableUiState.update { it.copy(inputHintMessage = "纬度或经度格式不正确，请输入有效的数字坐标") }
+            return
+        }
+
         val orderedTargetIds = current.availableAccounts
             .filter { it.accountId in current.selectedAccountIds }
             .map { it.accountId }
@@ -507,14 +543,14 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
             clazzId = route.clazzId,
             activeId = route.activeId,
             enc = current.parsedQrEnc,
-            rawQrContent = current.qrRawInput.takeIf { it.isNotBlank() },
-            signCode = current.signCodeInput.takeIf { it.isNotBlank() },
-            latitude = current.latitudeInput.toDoubleOrNull(),
-            longitude = current.longitudeInput.toDoubleOrNull(),
-            address = current.addressInput.takeIf { it.isNotBlank() },
+            rawQrContent = current.qrRawInput.trim().takeIf { it.isNotBlank() },
+            signCode = current.signCodeInput.trim().takeIf { it.isNotBlank() },
+            latitude = parsedLat,
+            longitude = parsedLng,
+            address = current.addressInput.trim().takeIf { it.isNotBlank() },
             photoBytes = current.photo?.bytes,
             photoFileName = current.photo?.fileName,
-            captchaValidate = current.captchaValidateInput.takeIf { it.isNotBlank() },
+            captchaValidate = current.captchaValidateInput.trim().takeIf { it.isNotBlank() },
         )
 
         viewModelScope.launch {

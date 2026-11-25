@@ -9,6 +9,7 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.Chaox
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingRemoteDataSource
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingSignType
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.StuSignSubmitParams
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.CoordinateConverter
 import javax.inject.Inject
 
 /**
@@ -208,11 +209,13 @@ class LocationSignActionHandler @Inject constructor(private val remoteDataSource
     ): SignExecutionResult {
         val lat = request.latitude
         val lng = request.longitude
-        if (lat == null || lng == null) {
-            return SignExecutionResult.RequiresExtraInput(
-                missingField = SignMissingField.LOCATION_COORDINATE,
-                message = "请先确认或选取当前签到经纬度坐标",
-            )
+        val validationError = validateSignCoordinates(
+            latitude = lat,
+            longitude = lng,
+            missingMessage = "请先确认或选取当前签到经纬度坐标",
+        )
+        if (validationError != null) {
+            return validationError
         }
 
         remoteDataSource.preSign(
@@ -356,13 +359,32 @@ private fun ensureOptionalLocationPresent(
     detail: ChaoxingActiveDetail,
     request: SignExecutionRequest,
     missingMessage: String,
-): SignExecutionResult? = if (detail.requiresLocation && (request.latitude == null || request.longitude == null)) {
-    SignExecutionResult.RequiresExtraInput(
-        missingField = SignMissingField.LOCATION_COORDINATE,
-        message = missingMessage,
+): SignExecutionResult? = if (detail.requiresLocation) {
+    validateSignCoordinates(
+        latitude = request.latitude,
+        longitude = request.longitude,
+        missingMessage = missingMessage,
     )
 } else {
     null
+}
+
+private fun validateSignCoordinates(
+    latitude: Double?,
+    longitude: Double?,
+    missingMessage: String,
+): SignExecutionResult? = when {
+    latitude == null || longitude == null -> SignExecutionResult.RequiresExtraInput(
+        missingField = SignMissingField.LOCATION_COORDINATE,
+        message = missingMessage,
+    )
+
+    !CoordinateConverter.isValidTargetCoordinate(latitude, longitude) -> SignExecutionResult.RequiresExtraInput(
+        missingField = SignMissingField.LOCATION_COORDINATE,
+        message = "当前经纬度超出有效范围（纬度 -90~90，经度 -180~180），请检查或重新选点",
+    )
+
+    else -> null
 }
 
 private fun StuSignSubmitParams.withOptionalLocation(
@@ -371,7 +393,7 @@ private fun StuSignSubmitParams.withOptionalLocation(
 ): StuSignSubmitParams {
     val lat = request.latitude
     val lng = request.longitude
-    return if (lat != null && lng != null) {
+    return if (CoordinateConverter.isValidTargetCoordinate(lat, lng)) {
         copy(
             latitude = lat.toString(),
             longitude = lng.toString(),
