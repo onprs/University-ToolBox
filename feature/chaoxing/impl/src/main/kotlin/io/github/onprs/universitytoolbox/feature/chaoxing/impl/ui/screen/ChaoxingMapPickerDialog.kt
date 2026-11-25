@@ -341,15 +341,18 @@ internal fun ChaoxingMapPickerDialog(
     var isAddressFocused by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
 
-    BackHandler(enabled = !viewport.showSavePresetPrompt) {
-        if (searchResults.isNotEmpty()) {
+    MapOverlayBackHandlers(
+        isSavePromptOpen = viewport.showSavePresetPrompt,
+        searchResults = searchResults,
+        onDismissSearchResults = {
             focusManager.clearFocus()
             onDismissSearchResults()
-        } else {
+        },
+        onDismissMap = {
             focusManager.clearFocus()
             onDismiss()
-        }
-    }
+        },
+    )
 
     MapPickerSideEffects(
         viewport = viewport,
@@ -387,7 +390,10 @@ internal fun ChaoxingMapPickerDialog(
         onExecuteSearch = { q, jumpFirst ->
             onExecuteSearch(q, viewport.centerGcj.takeIf { viewport.hasConfirmedLocation }, jumpFirst)
         },
-        onDismissSearchResults = onDismissSearchResults,
+        onDismissSearchResults = {
+            focusManager.clearFocus()
+            onDismissSearchResults()
+        },
         onConfirmSelection = onConfirmSelection,
         onSaveAsPresetAndSelect = onSaveAsPresetAndSelect,
         onRequestCurrentLocation = onRequestCurrentLocation,
@@ -397,6 +403,28 @@ internal fun ChaoxingMapPickerDialog(
             onDismiss()
         },
     )
+}
+
+@Composable
+private fun MapOverlayBackHandlers(
+    isSavePromptOpen: Boolean,
+    searchResults: List<ResolvedPlace>,
+    onDismissSearchResults: () -> Unit,
+    onDismissMap: () -> Unit,
+) {
+    var dismissedCurrentResults by remember(searchResults) { mutableStateOf(false) }
+    val currentResults by rememberUpdatedState(searchResults)
+    val currentOnDismissSearch by rememberUpdatedState(onDismissSearchResults)
+    val currentOnDismissMap by rememberUpdatedState(onDismissMap)
+
+    BackHandler(enabled = !isSavePromptOpen) {
+        if (currentResults.isNotEmpty() && !dismissedCurrentResults) {
+            dismissedCurrentResults = true
+            currentOnDismissSearch()
+        } else {
+            currentOnDismissMap()
+        }
+    }
 }
 
 private fun resolveInitialCenterSpec(

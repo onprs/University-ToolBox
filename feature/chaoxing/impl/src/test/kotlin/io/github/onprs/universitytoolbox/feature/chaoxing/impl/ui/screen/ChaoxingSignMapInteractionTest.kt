@@ -1,18 +1,21 @@
 package io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.screen
 
+import android.app.Application
+import android.content.ComponentName
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.net.Uri
-import android.os.Looper
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.SaverScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import io.github.onprs.universitytoolbox.core.common.dispatcher.DispatcherProvider
@@ -73,16 +76,41 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
+import org.junit.rules.TestRule
 import org.junit.runner.RunWith
-import org.robolectric.Robolectric
+import org.junit.runners.model.Statement
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows.shadowOf
+import org.robolectric.Shadows
 import org.robolectric.shadows.ShadowBitmapFactory
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class ChaoxingSignMapInteractionTest {
+    private val composeTestRule = createComposeRule()
+
+    private val ensureActivityRegisteredRule = TestRule { base, _ ->
+        object : Statement() {
+            override fun evaluate() {
+                val app = ApplicationProvider.getApplicationContext<Application>()
+                val component = ComponentName(app.packageName, ComponentActivity::class.java.name)
+                val shadowPm = Shadows.shadowOf(app.packageManager)
+                val activityInfo = ActivityInfo().apply {
+                    packageName = component.packageName
+                    name = component.className
+                    exported = true
+                }
+                shadowPm.addOrUpdateActivity(activityInfo)
+                base.evaluate()
+            }
+        }
+    }
+
+    @get:Rule
+    val ruleChain: RuleChain = RuleChain.outerRule(ensureActivityRegisteredRule).around(composeTestRule)
+
     private lateinit var testDispatcher: CoroutineDispatcher
     private lateinit var server: MockWebServer
     private lateinit var okHttpClient: OkHttpClient
@@ -342,7 +370,7 @@ class ChaoxingSignMapInteractionTest {
 
     @Test
     fun `map overlay mounts in host activity window and layered back press dismisses search before map`() {
-        val activity = Robolectric.buildActivity(ComponentActivity::class.java).setup().get()
+        lateinit var hostActivity: ComponentActivity
         var candidates by mutableStateOf(
             listOf(
                 ResolvedPlace(
@@ -356,7 +384,8 @@ class ChaoxingSignMapInteractionTest {
         var dismissSearchCount = 0
         var dismissMapCount = 0
 
-        activity.setContent {
+        composeTestRule.setContent {
+            hostActivity = LocalContext.current as ComponentActivity
             UniversityToolboxTheme(darkTheme = false, dynamicColor = false) {
                 ChaoxingMapPickerDialog(
                     initialBd09Point = GeoPoint(36.007, 120.127),
@@ -387,17 +416,17 @@ class ChaoxingSignMapInteractionTest {
                 )
             }
         }
-        shadowOf(Looper.getMainLooper()).idle()
+        composeTestRule.waitForIdle()
 
         // 第一次系统返回：优先收起搜索候选浮层，地图本身保持打开
-        activity.onBackPressedDispatcher.onBackPressed()
-        shadowOf(Looper.getMainLooper()).idle()
+        hostActivity.onBackPressedDispatcher.onBackPressed()
+        composeTestRule.waitForIdle()
         assertEquals(1, dismissSearchCount)
         assertEquals(0, dismissMapCount)
 
         // 第二次系统返回：候选浮层已清空，关闭地图覆盖层回到表单页
-        activity.onBackPressedDispatcher.onBackPressed()
-        shadowOf(Looper.getMainLooper()).idle()
+        hostActivity.onBackPressedDispatcher.onBackPressed()
+        composeTestRule.waitForIdle()
         assertEquals(1, dismissMapCount)
     }
 
