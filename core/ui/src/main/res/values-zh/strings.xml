@@ -18,5 +18,5 @@
     <string name="core_ui_locked_missing_scope">当前授权范围未包含此工具。</string>
     <string name="core_ui_locked_initializing">正在核验授权状态…</string>
     <string name="core_ui_locked_remotely_disabled">该功能当前正在维护，暂不可用。</string>
-    <string name="core_ui_dev_stub_badge">DEV STUB</string>
+    <string name="core_ui_dev_stub_badge">演示授权</string>
 </resources>

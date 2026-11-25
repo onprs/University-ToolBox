@@ -18,5 +18,5 @@
     <string name="core_ui_locked_missing_scope">Your current license does not include access to this tool.</string>
     <string name="core_ui_locked_initializing">Verifying license status…</string>
     <string name="core_ui_locked_remotely_disabled">Temporarily unavailable due to maintenance.</string>
-    <string name="core_ui_dev_stub_badge">DEV STUB</string>
+    <string name="core_ui_dev_stub_badge">Demo License</string>
 </resources>

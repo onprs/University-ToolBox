@@ -5,6 +5,7 @@ package io.github.onprs.universitytoolbox.feature.settings.domain
  */
 enum class PermissionKind {
     CAMERA,
+    LOCATION,
     NOTIFICATIONS,
     INSTALL_UNKNOWN_APPS,
 }

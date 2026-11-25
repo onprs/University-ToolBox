@@ -36,13 +36,21 @@ data class HomeUiState(
     val filteredTools: List<HomeToolItem> = emptyList(),
     val licenseState: LicenseState = LicenseState.Initializing,
     val entitlement: LicenseEntitlement? = null,
+    val allTools: List<HomeToolItem> = emptyList(),
 ) {
     val selectedTool: HomeToolItem?
         get() = filteredTools.firstOrNull { it.descriptor.id == selectedToolId }
+            ?: allTools.firstOrNull { it.descriptor.id == selectedToolId }
             ?: pinnedTools.firstOrNull { it.descriptor.id == selectedToolId }
+            ?: recentTools.firstOrNull { it.descriptor.id == selectedToolId }
 }
 
-private data class FilterInputs(val query: String, val category: ToolCategory?, val selectedToolId: String?)
+private data class FilterInputs(
+    val query: String,
+    val category: ToolCategory?,
+    val selectedToolId: String?,
+    val hasExplicitFavorites: Boolean,
+)
 
 /**
  * 首页与自适应导航壳控制器：聚合工具注册表、收藏/最近使用、授权状态、远程熔断开关与动态快捷方式。
@@ -59,16 +67,22 @@ class HomeViewModel @Inject constructor(
     private val searchQuery = MutableStateFlow("")
     private val selectedCategory = MutableStateFlow<ToolCategory?>(null)
     private val selectedToolId = MutableStateFlow<String?>(null)
+    private val hasExplicitFavoriteState = MutableStateFlow(false)
 
     private var lastPublishedShortcutSignature: List<Pair<String, Boolean>>? = null
-    private var hasExplicitFavoriteState: Boolean = false
 
     private val filterInputs = combine(
         searchQuery,
         selectedCategory,
         selectedToolId,
-    ) { query, category, toolId ->
-        FilterInputs(query = query, category = category, selectedToolId = toolId)
+        hasExplicitFavoriteState,
+    ) { query, category, toolId, explicitFavorites ->
+        FilterInputs(
+            query = query,
+            category = category,
+            selectedToolId = toolId,
+            hasExplicitFavorites = explicitFavorites,
+        )
     }
 
     val uiState: StateFlow<HomeUiState> = combine(
@@ -79,10 +93,11 @@ class HomeViewModel @Inject constructor(
         remoteGovernanceRepository.disabledTools,
     ) { inputs, licenseState, favoriteEntities, recentEntities, disabledTools ->
         val allTools = toolRegistry.allTools()
-        if (favoriteEntities.isNotEmpty()) {
-            hasExplicitFavoriteState = true
+        val explicitFavorites = inputs.hasExplicitFavorites || favoriteEntities.isNotEmpty()
+        if (favoriteEntities.isNotEmpty() && !hasExplicitFavoriteState.value) {
+            hasExplicitFavoriteState.value = true
         }
-        val favoriteIds = if (hasExplicitFavoriteState) {
+        val favoriteIds = if (explicitFavorites) {
             favoriteEntities.map { it.toolId }.toSet()
         } else {
             null
@@ -135,6 +150,7 @@ class HomeViewModel @Inject constructor(
             filteredTools = snapshot.filteredTools,
             licenseState = licenseState,
             entitlement = (licenseState as? LicenseState.Unlocked)?.entitlement,
+            allTools = fullSnapshot.filteredTools,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -156,11 +172,14 @@ class HomeViewModel @Inject constructor(
 
     fun toggleFavorite(toolId: String) {
         viewModelScope.launch {
-            val currentlyPinned = uiState.value.filteredTools
-                .firstOrNull { it.descriptor.id == toolId }
-                ?.isPinned == true
-            if (!hasExplicitFavoriteState) {
-                hasExplicitFavoriteState = true
+            val state = uiState.value
+            val currentlyPinned = (
+                state.allTools.firstOrNull { it.descriptor.id == toolId }
+                    ?: state.pinnedTools.firstOrNull { it.descriptor.id == toolId }
+                    ?: state.filteredTools.firstOrNull { it.descriptor.id == toolId }
+                )?.isPinned == true
+            if (!hasExplicitFavoriteState.value) {
+                hasExplicitFavoriteState.value = true
                 toolRegistry.allTools()
                     .filter { it.isPinnedByDefault && it.id != toolId }
                     .forEach { defaultTool ->

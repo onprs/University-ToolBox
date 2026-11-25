@@ -1,7 +1,9 @@
 package io.github.onprs.universitytoolbox.feature.settings.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -11,13 +13,18 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -50,15 +57,23 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.onprs.universitytoolbox.core.common.result.DomainError
 import io.github.onprs.universitytoolbox.core.datastore.AppLanguage
@@ -90,17 +105,17 @@ fun SettingsRoute(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
-    val snackbarHostState = androidx.compose.runtime.remember { SnackbarHostState() }
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+    LifecycleResumeEffect(Unit) {
         viewModel.refreshRuntimeStatus()
+        onPauseOrDispose {}
     }
 
-    val runtimePermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-    ) {
-        viewModel.refreshRuntimeStatus()
-    }
+    val onRequestPermissionAction = rememberPermissionActionHandler(
+        context = context,
+        onRefreshStatus = viewModel::refreshRuntimeStatus,
+    )
 
     val resolvedSnackbarText = snackbarText(uiState.snackbarMessage)
     LaunchedEffect(uiState.snackbarMessage) {
@@ -125,19 +140,7 @@ fun SettingsRoute(
         onToggleDynamicColor = viewModel::setDynamicColorEnabled,
         onSelectLanguage = viewModel::setAppLanguage,
         onRefreshPermissions = viewModel::refreshRuntimeStatus,
-        onRequestPermissionAction = { kind ->
-            when (kind) {
-                PermissionKind.CAMERA -> runtimePermissionLauncher.launch(Manifest.permission.CAMERA)
-                PermissionKind.NOTIFICATIONS -> {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        runtimePermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    } else {
-                        openNotificationSettings(context)
-                    }
-                }
-                PermissionKind.INSTALL_UNKNOWN_APPS -> openInstallUnknownAppsSettings(context)
-            }
-        },
+        onRequestPermissionAction = onRequestPermissionAction,
         onManifestUrlChange = viewModel::updateManifestUrl,
         onCheckUpdate = viewModel::checkForUpdates,
         onDownloadAndInstall = viewModel::downloadAndInstallUpdate,
@@ -150,6 +153,117 @@ fun SettingsRoute(
         onClearLogs = viewModel::clearDiagnosticLogs,
         modifier = modifier,
     )
+}
+
+private data class PendingPermissionRequest(
+    val kind: PermissionKind,
+    val permissions: List<String>,
+    val hadRationaleBefore: Boolean,
+)
+
+@Composable
+private fun rememberPermissionActionHandler(context: Context, onRefreshStatus: () -> Unit): (PermissionKind) -> Unit {
+    val activity = remember(context) { context.findActivity() }
+    var pendingRequest by remember { mutableStateOf<PendingPermissionRequest?>(null) }
+
+    val singlePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        onRefreshStatus()
+        if (!granted) {
+            handlePermissionDeniedFallback(context, activity, pendingRequest)
+        }
+        pendingRequest = null
+    }
+
+    val multiplePermissionsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) { results ->
+        onRefreshStatus()
+        if (results.values.none { it }) {
+            handlePermissionDeniedFallback(context, activity, pendingRequest)
+        }
+        pendingRequest = null
+    }
+
+    return { kind ->
+        dispatchPermissionAction(
+            kind = kind,
+            context = context,
+            activity = activity,
+            onTrackPending = { pendingRequest = it },
+            launchSingle = singlePermissionLauncher::launch,
+            launchMultiple = multiplePermissionsLauncher::launch,
+        )
+    }
+}
+
+private fun dispatchPermissionAction(
+    kind: PermissionKind,
+    context: Context,
+    activity: Activity?,
+    onTrackPending: (PendingPermissionRequest) -> Unit,
+    launchSingle: (String) -> Unit,
+    launchMultiple: (Array<String>) -> Unit,
+) {
+    when (kind) {
+        PermissionKind.CAMERA -> {
+            val request = createPendingRequest(kind, listOf(Manifest.permission.CAMERA), activity)
+            onTrackPending(request)
+            launchSingle(Manifest.permission.CAMERA)
+        }
+        PermissionKind.LOCATION -> {
+            val perms = listOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            )
+            onTrackPending(createPendingRequest(kind, perms, activity))
+            launchMultiple(perms.toTypedArray())
+        }
+        PermissionKind.NOTIFICATIONS -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val perm = Manifest.permission.POST_NOTIFICATIONS
+                onTrackPending(createPendingRequest(kind, listOf(perm), activity))
+                launchSingle(perm)
+            } else {
+                openNotificationSettings(context)
+            }
+        }
+        PermissionKind.INSTALL_UNKNOWN_APPS -> openInstallUnknownAppsSettings(context)
+    }
+}
+
+private fun createPendingRequest(
+    kind: PermissionKind,
+    permissions: List<String>,
+    activity: Activity?,
+): PendingPermissionRequest = PendingPermissionRequest(
+    kind = kind,
+    permissions = permissions,
+    hadRationaleBefore = hasAnyPermissionRationale(activity, permissions),
+)
+
+private fun handlePermissionDeniedFallback(context: Context, activity: Activity?, request: PendingPermissionRequest?) {
+    if (request == null) {
+        return
+    }
+    val hasRationaleAfter = hasAnyPermissionRationale(activity, request.permissions)
+    if (!request.hadRationaleBefore && !hasRationaleAfter) {
+        if (request.kind == PermissionKind.NOTIFICATIONS) {
+            openNotificationSettings(context)
+        } else {
+            openAppDetailsSettings(context)
+        }
+    }
+}
+
+private fun hasAnyPermissionRationale(activity: Activity?, permissions: List<String>): Boolean {
+    if (activity == null) {
+        return false
+    }
+    return permissions.any { perm ->
+        ActivityCompat.shouldShowRequestPermissionRationale(activity, perm)
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -185,6 +299,8 @@ internal fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(ToolboxSpacing.medium),
             verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.medium),
@@ -246,18 +362,26 @@ private fun SettingsTopBar(onBackClick: () -> Unit) {
 
 @Composable
 private fun DiagnosticLogDialog(reportPreview: String, onDismiss: () -> Unit, onExportLogs: () -> Unit) {
+    val configuration = LocalConfiguration.current
+    val maxContentHeight = (configuration.screenHeightDp * 0.45f).dp.coerceIn(120.dp, 360.dp)
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(text = stringResource(R.string.feature_settings_preview_logs)) },
         text = {
-            SelectionContainer {
-                Text(
-                    text = reportPreview,
-                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    modifier = Modifier
-                        .heightIn(max = 360.dp)
-                        .verticalScroll(rememberScrollState()),
-                )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxContentHeight)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                SelectionContainer {
+                    Text(
+                        text = reportPreview,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         },
         confirmButton = {
@@ -453,6 +577,7 @@ private fun PermissionsBoardSection(
 private fun PermissionStatusRow(item: PermissionStatusItem, onActionClick: () -> Unit) {
     val labelRes = when (item.kind) {
         PermissionKind.CAMERA -> R.string.feature_settings_perm_camera
+        PermissionKind.LOCATION -> R.string.feature_settings_perm_location
         PermissionKind.NOTIFICATIONS -> R.string.feature_settings_perm_notifications
         PermissionKind.INSTALL_UNKNOWN_APPS -> R.string.feature_settings_perm_install
     }
@@ -511,6 +636,15 @@ private fun UpdatesAndStorageSection(
     onOpenInstallPermissionSettings: () -> Unit,
     onClearCache: () -> Unit,
 ) {
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val dismissKeyboard = {
+        keyboardController?.hide()
+        focusManager.clearFocus()
+    }
+    val isCacheBusy = uiState.downloadState is UpdateDownloadState.Downloading ||
+        uiState.downloadState is UpdateDownloadState.Verifying
+
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(ToolboxSpacing.medium),
@@ -532,6 +666,23 @@ private fun UpdatesAndStorageSection(
                 value = uiState.manifestUrlInput,
                 onValueChange = onManifestUrlChange,
                 label = { Text(text = stringResource(R.string.feature_settings_manifest_url_hint)) },
+                trailingIcon = {
+                    if (uiState.manifestUrlInput != SettingsUiState.DEFAULT_MANIFEST_URL) {
+                        IconButton(
+                            onClick = { onManifestUrlChange(SettingsUiState.DEFAULT_MANIFEST_URL) },
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Refresh,
+                                contentDescription = stringResource(R.string.feature_settings_reset_manifest_url),
+                            )
+                        }
+                    }
+                },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Uri,
+                    imeAction = ImeAction.Done,
+                ),
+                keyboardActions = KeyboardActions(onDone = { dismissKeyboard() }),
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -549,12 +700,19 @@ private fun UpdatesAndStorageSection(
 
             UpdateActionsRow(
                 uiState = uiState,
-                onCheckUpdate = onCheckUpdate,
-                onDownloadAndInstall = onDownloadAndInstall,
+                onCheckUpdate = {
+                    dismissKeyboard()
+                    onCheckUpdate()
+                },
+                onDownloadAndInstall = {
+                    dismissKeyboard()
+                    onDownloadAndInstall()
+                },
             )
 
             CacheCleanupCard(
                 cacheSizeFormatted = uiState.cacheSizeFormatted,
+                enabled = !isCacheBusy,
                 onClearCache = onClearCache,
             )
         }
@@ -606,7 +764,7 @@ private fun UpdateActionsRow(uiState: SettingsUiState, onCheckUpdate: () -> Unit
 }
 
 @Composable
-private fun CacheCleanupCard(cacheSizeFormatted: String, onClearCache: () -> Unit) {
+private fun CacheCleanupCard(cacheSizeFormatted: String, enabled: Boolean, onClearCache: () -> Unit) {
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -619,7 +777,10 @@ private fun CacheCleanupCard(cacheSizeFormatted: String, onClearCache: () -> Uni
                 text = stringResource(R.string.feature_settings_cache_size, cacheSizeFormatted),
                 style = MaterialTheme.typography.bodyMedium,
             )
-            TextButton(onClick = onClearCache) {
+            TextButton(
+                onClick = onClearCache,
+                enabled = enabled,
+            ) {
                 Icon(
                     imageVector = Icons.Outlined.CleaningServices,
                     contentDescription = null,
@@ -714,10 +875,18 @@ private fun DownloadStateProgressArea(
                 )
                 ToolboxLinearProgressBar(progress = fraction)
             } else {
+                Text(
+                    text = stringResource(R.string.feature_settings_downloading_indeterminate),
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 ToolboxWavyProgressBar(progress = null)
             }
         }
         is UpdateDownloadState.Verifying -> {
+            Text(
+                text = stringResource(R.string.feature_settings_verifying_update),
+                style = MaterialTheme.typography.bodySmall,
+            )
             ToolboxWavyProgressBar(progress = null)
         }
         is UpdateDownloadState.ReadyToInstall -> {
@@ -729,6 +898,10 @@ private fun DownloadStateProgressArea(
             }
         }
         UpdateDownloadState.Installing -> {
+            Text(
+                text = stringResource(R.string.feature_settings_installing_update),
+                style = MaterialTheme.typography.bodySmall,
+            )
             ToolboxLinearProgressBar()
         }
         is UpdateDownloadState.InstallPendingUserAction -> {
@@ -822,23 +995,62 @@ private fun shareRedactedReport(context: Context, report: String) {
         putExtra(Intent.EXTRA_TEXT, report)
     }
     val chooser = Intent.createChooser(shareIntent, null).apply {
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (context !is Activity) {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
     }
-    context.startActivity(chooser)
+    runCatching {
+        context.startActivity(chooser)
+    }
+}
+
+private fun openAppDetailsSettings(context: Context) {
+    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+        data = Uri.fromParts("package", context.packageName, null)
+        if (context !is Activity) {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+    launchSettingsSafely(context, intent)
 }
 
 private fun openNotificationSettings(context: Context) {
     val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
         putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (context !is Activity) {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
     }
-    context.startActivity(intent)
+    launchSettingsSafely(context, intent)
 }
 
 private fun openInstallUnknownAppsSettings(context: Context) {
     val intent = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
         data = Uri.fromParts("package", context.packageName, null)
-        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (context !is Activity) {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
     }
-    context.startActivity(intent)
+    launchSettingsSafely(context, intent)
+}
+
+private fun launchSettingsSafely(context: Context, primaryIntent: Intent) {
+    runCatching {
+        context.startActivity(primaryIntent)
+    }.onFailure {
+        runCatching {
+            val fallback = Intent(Settings.ACTION_SETTINGS).apply {
+                if (context !is Activity) {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            context.startActivity(fallback)
+        }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

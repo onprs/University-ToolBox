@@ -22,9 +22,10 @@
     <string name="feature_home_action_unpin">Unpin</string>
     <string name="feature_home_empty_title">No matching tools</string>
     <string name="feature_home_empty_desc">Try another keyword, pinyin initial, or category filter.</string>
+    <string name="feature_home_action_reset_filter">Clear Search &amp; Filters</string>
     <string name="feature_home_detail_placeholder">Select a tool to view details and launch options.</string>
     <string name="feature_home_detail_required_tier">Required Tier: %1$s</string>
     <string name="feature_home_detail_last_used">Last used recently</string>
-    <string name="feature_home_detail_disabled_default">This tool is temporarily paused by remote governance.</string>
+    <string name="feature_home_detail_disabled_default">This tool is temporarily unavailable due to maintenance.</string>
     <string name="feature_home_detail_back">Back to Tools</string>
 </resources>

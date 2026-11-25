@@ -18,7 +18,7 @@ import io.github.onprs.universitytoolbox.core.license.api.LicenseState
 private const val STUB_CHALLENGE_PREFIX = "DEV-STUB-"
 
 /**
- * 仅在非正式授权引擎模式下展示简洁的 `DEV STUB` 状态指示芯片。
+ * 仅在非正式授权引擎模式下展示演示授权状态提示标签。
  */
 @Composable
 fun DevStubBanner(isOfficialEngine: Boolean, modifier: Modifier = Modifier) {
@@ -49,7 +49,7 @@ fun DevStubBanner(isOfficialEngine: Boolean, modifier: Modifier = Modifier) {
 }
 
 /**
- * 根据 [LicenseState] 自动判断是否需要展示 `DEV STUB` 状态指示芯片。
+ * 根据 [LicenseState] 自动判断是否需要展示演示授权状态提示标签。
  */
 @Composable
 fun DevStubBanner(licenseState: LicenseState, modifier: Modifier = Modifier) {

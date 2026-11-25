@@ -19,8 +19,9 @@
     <string name="feature_settings_lang_en">English</string>
     <string name="feature_settings_section_permissions">系统权限状态</string>
     <string name="feature_settings_perm_camera">相机权限（扫码使用）</string>
+    <string name="feature_settings_perm_location">位置权限（签到定位）</string>
     <string name="feature_settings_perm_notifications">通知权限</string>
-    <string name="feature_settings_perm_install">安装应用权限（自更新）</string>
+    <string name="feature_settings_perm_install">安装应用权限（应用更新）</string>
     <string name="feature_settings_perm_granted">已授权</string>
     <string name="feature_settings_perm_denied">未授权</string>
     <string name="feature_settings_perm_open_settings">前往授权</string>
@@ -35,16 +36,20 @@
     <string name="feature_settings_force_update">当前版本低于最低受支持版本（%1$d），请立即更新以继续使用。</string>
     <string name="feature_settings_download_install">下载并安装</string>
     <string name="feature_settings_downloading">正在下载安装包：%1$d%%</string>
+    <string name="feature_settings_downloading_indeterminate">正在下载安装包…</string>
+    <string name="feature_settings_verifying_update">正在校验安装包完整性…</string>
+    <string name="feature_settings_installing_update">正在启动安装程序…</string>
     <string name="feature_settings_install_now">立即安装更新包</string>
     <string name="feature_settings_clear_cache">清理应用缓存</string>
     <string name="feature_settings_cache_size">当前缓存：%1$s</string>
     <string name="feature_settings_cache_cleared">已清理缓存 %1$s</string>
-    <string name="feature_settings_section_diagnostics">脱敏诊断日志</string>
-    <string name="feature_settings_preview_logs">预览脱敏诊断日志</string>
+    <string name="feature_settings_section_diagnostics">诊断日志</string>
+    <string name="feature_settings_preview_logs">查看诊断日志</string>
     <string name="feature_settings_export_logs">导出并分享</string>
     <string name="feature_settings_clear_logs">清空诊断记录</string>
     <string name="feature_settings_logs_cleared">已清空诊断日志</string>
     <string name="feature_settings_close">关闭</string>
     <string name="feature_settings_update_failed">检查或下载更新失败：%1$s</string>
-    <string name="feature_settings_manifest_url_hint">应用内置更新源地址</string>
+    <string name="feature_settings_manifest_url_hint">更新源地址</string>
+    <string name="feature_settings_reset_manifest_url">恢复默认更新源</string>
 </resources>

@@ -19,6 +19,7 @@
     <string name="feature_settings_lang_en">English</string>
     <string name="feature_settings_section_permissions">Permissions</string>
     <string name="feature_settings_perm_camera">Camera</string>
+    <string name="feature_settings_perm_location">Location</string>
     <string name="feature_settings_perm_notifications">Notifications</string>
     <string name="feature_settings_perm_install">Install Unknown Apps</string>
     <string name="feature_settings_perm_granted">Granted</string>
@@ -35,16 +36,20 @@
     <string name="feature_settings_force_update">Update required (minimum supported build: %1$d). Please update to continue.</string>
     <string name="feature_settings_download_install">Download &amp; Install</string>
     <string name="feature_settings_downloading">Downloading update: %1$d%%</string>
+    <string name="feature_settings_downloading_indeterminate">Downloading update package…</string>
+    <string name="feature_settings_verifying_update">Verifying update package…</string>
+    <string name="feature_settings_installing_update">Opening package installer…</string>
     <string name="feature_settings_install_now">Install Downloaded APK</string>
     <string name="feature_settings_clear_cache">Clear Cache</string>
     <string name="feature_settings_cache_size">Cache size: %1$s</string>
     <string name="feature_settings_cache_cleared">Cleared %1$s</string>
     <string name="feature_settings_section_diagnostics">Diagnostics</string>
-    <string name="feature_settings_preview_logs">View Redacted Diagnostic Logs</string>
+    <string name="feature_settings_preview_logs">View Diagnostic Logs</string>
     <string name="feature_settings_export_logs">Export &amp; Share</string>
     <string name="feature_settings_clear_logs">Clear Logs</string>
     <string name="feature_settings_logs_cleared">Diagnostic logs cleared</string>
     <string name="feature_settings_close">Close</string>
     <string name="feature_settings_update_failed">Update check or download failed: %1$s</string>
-    <string name="feature_settings_manifest_url_hint">Manifest URL configured in app updates</string>
+    <string name="feature_settings_manifest_url_hint">Update source URL</string>
+    <string name="feature_settings_reset_manifest_url">Reset to default URL</string>
 </resources>

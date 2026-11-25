@@ -2,6 +2,7 @@ package io.github.onprs.universitytoolbox.core.scanner
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
@@ -56,10 +57,36 @@ class MlKitDecoderBackend @Inject constructor(
                 )
             },
         ) {
-            val image = InputImage.fromFilePath(context, uri)
-            processInputImage(image)
+            val sampledBitmap = decodeDownsampledBitmapIfOversized(uri)
+            if (sampledBitmap != null) {
+                try {
+                    processInputImage(InputImage.fromBitmap(sampledBitmap, 0))
+                } finally {
+                    sampledBitmap.recycle()
+                }
+            } else {
+                val image = InputImage.fromFilePath(context, uri)
+                processInputImage(image)
+            }
         }
     }
+
+    private fun decodeDownsampledBitmapIfOversized(uri: Uri): Bitmap? = runCatching {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, bounds)
+        } ?: return null
+        val width = bounds.outWidth
+        val height = bounds.outHeight
+        if (width <= 0 || height <= 0 || maxOf(width, height) <= MAX_STATIC_DECODE_DIMENSION_PX) {
+            return null
+        }
+        val sampleSize = calculateInSampleSize(width, height, MAX_STATIC_DECODE_DIMENSION_PX)
+        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, decodeOptions)
+        }
+    }.getOrNull()
 
     private suspend fun processInputImage(image: InputImage): List<BarcodeScanResult> {
         val options = BarcodeScannerOptions.Builder()
@@ -93,7 +120,21 @@ class MlKitDecoderBackend @Inject constructor(
             }
         }
         addOnCanceledListener {
-            continuation.cancel()
+            if (continuation.isActive) {
+                continuation.cancel()
+            }
+        }
+    }
+
+    internal companion object {
+        const val MAX_STATIC_DECODE_DIMENSION_PX = 2048
+
+        fun calculateInSampleSize(width: Int, height: Int, maxDimension: Int): Int {
+            var sampleSize = 1
+            while (maxOf(width / sampleSize, height / sampleSize) > maxDimension) {
+                sampleSize *= 2
+            }
+            return sampleSize
         }
     }
 }

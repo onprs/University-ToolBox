@@ -91,6 +91,15 @@ class AndroidPermissionStatusProvider @Inject constructor(@param:ApplicationCont
             Manifest.permission.CAMERA,
         ) == PackageManager.PERMISSION_GRANTED
 
+        val locationGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED
+
         val notificationsGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ContextCompat.checkSelfPermission(
                 context,
@@ -109,6 +118,11 @@ class AndroidPermissionStatusProvider @Inject constructor(@param:ApplicationCont
                 kind = PermissionKind.CAMERA,
                 isGranted = cameraGranted,
                 requiresSystemSettings = !cameraGranted,
+            ),
+            PermissionStatusItem(
+                kind = PermissionKind.LOCATION,
+                isGranted = locationGranted,
+                requiresSystemSettings = !locationGranted,
             ),
             PermissionStatusItem(
                 kind = PermissionKind.NOTIFICATIONS,

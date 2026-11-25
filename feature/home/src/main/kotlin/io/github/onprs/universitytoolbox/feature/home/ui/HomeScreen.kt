@@ -9,13 +9,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -59,6 +61,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
@@ -103,7 +106,7 @@ fun HomeRoute(
         onSelectTool = viewModel::selectTool,
         onToggleFavorite = viewModel::toggleFavorite,
         onLaunchTool = { item ->
-            viewModel.onToolOpened(item)
+            viewModel.selectTool(item.descriptor.id)
             onOpenTool(item.descriptor.entryKey)
         },
         onOpenSettings = onOpenSettings,
@@ -147,7 +150,8 @@ internal fun HomeScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(innerPadding)
+                .consumeWindowInsets(innerPadding),
         ) {
             DevStubBanner(licenseState = uiState.licenseState)
 
@@ -178,8 +182,10 @@ internal fun HomeScreen(
                 detailPane = {
                     AnimatedPane {
                         val activeKey = navigator.currentDestination?.contentKey
-                        val detailItem = uiState.filteredTools.firstOrNull { it.descriptor.id == activeKey }
+                        val detailItem = uiState.allTools.firstOrNull { it.descriptor.id == activeKey }
+                            ?: uiState.filteredTools.firstOrNull { it.descriptor.id == activeKey }
                             ?: uiState.pinnedTools.firstOrNull { it.descriptor.id == activeKey }
+                            ?: uiState.recentTools.firstOrNull { it.descriptor.id == activeKey }
                             ?: uiState.selectedTool
                         HomeToolDetailPane(
                             item = detailItem,
@@ -187,7 +193,7 @@ internal fun HomeScreen(
                             onBackClick = { scope.launch { navigator.navigateBack() } },
                             onLaunchTool = onLaunchTool,
                             onToggleFavorite = onToggleFavorite,
-                            onOpenUnlock = { onOpenUnlock(null, false) },
+                            onOpenUnlock = { onOpenUnlock(null, true) },
                         )
                     }
                 },
@@ -229,14 +235,21 @@ private fun HomeCatalogListPane(
     onItemClick: (HomeToolItem) -> Unit,
 ) {
     val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
-    val selectWithClearFocus: (HomeToolItem) -> Unit = { item ->
+    val dismissKeyboardAndFocus = {
+        keyboardController?.hide()
         focusManager.clearFocus()
+    }
+    val selectWithClearFocus: (HomeToolItem) -> Unit = { item ->
+        dismissKeyboardAndFocus()
         onItemClick(item)
     }
 
     LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress) focusManager.clearFocus()
+        if (listState.isScrollInProgress) {
+            dismissKeyboardAndFocus()
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -244,7 +257,9 @@ private fun HomeCatalogListPane(
         Box(modifier = Modifier.size(1.dp).focusable())
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .imePadding(),
             contentPadding = PaddingValues(ToolboxSpacing.medium),
             verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.mediumSmall),
         ) {
@@ -252,39 +267,34 @@ private fun HomeCatalogListPane(
                 HomeSearchField(
                     query = uiState.searchQuery,
                     onQueryChange = onSearchQueryChange,
-                    onClearFocus = { focusManager.clearFocus() },
+                    onClearFocus = dismissKeyboardAndFocus,
                 )
             }
             item(key = "category_chips") {
                 CategoryFilterRow(
                     selectedCategory = uiState.selectedCategory,
                     onSelectCategory = { category ->
-                        focusManager.clearFocus()
+                        dismissKeyboardAndFocus()
                         onSelectCategory(category)
                     },
                 )
             }
-            if (uiState.searchQuery.isBlank() && uiState.selectedCategory == null) {
-                if (uiState.pinnedTools.isNotEmpty()) {
-                    item(key = "pinned_section") {
-                        HomePinnedSection(pinnedTools = uiState.pinnedTools, onItemClick = selectWithClearFocus)
-                    }
-                }
-                if (uiState.recentTools.isNotEmpty()) {
-                    item(key = "recent_section") {
-                        HomeRecentSection(recentTools = uiState.recentTools, onItemClick = selectWithClearFocus)
-                    }
-                }
-            }
+            homeOverviewSections(
+                uiState = uiState,
+                onItemClick = selectWithClearFocus,
+            )
             item(key = "all_header") {
                 ToolboxSectionHeader(title = stringResource(R.string.feature_home_section_all))
             }
             if (uiState.filteredTools.isEmpty()) {
                 item(key = "empty_tools") {
-                    EmptyStateView(
-                        title = stringResource(R.string.feature_home_empty_title),
-                        description = stringResource(R.string.feature_home_empty_desc),
-                        modifier = Modifier.fillMaxWidth().height(220.dp),
+                    HomeEmptyFilteredState(
+                        hasActiveFilter = uiState.searchQuery.isNotBlank() || uiState.selectedCategory != null,
+                        onResetFilters = {
+                            onSearchQueryChange("")
+                            onSelectCategory(null)
+                            dismissKeyboardAndFocus()
+                        },
                     )
                 }
             } else {
@@ -299,6 +309,37 @@ private fun HomeCatalogListPane(
             }
         }
     }
+}
+
+private fun LazyListScope.homeOverviewSections(uiState: HomeUiState, onItemClick: (HomeToolItem) -> Unit) {
+    if (uiState.searchQuery.isNotBlank() || uiState.selectedCategory != null) {
+        return
+    }
+    if (uiState.pinnedTools.isNotEmpty()) {
+        item(key = "pinned_section") {
+            HomePinnedSection(pinnedTools = uiState.pinnedTools, onItemClick = onItemClick)
+        }
+    }
+    if (uiState.recentTools.isNotEmpty()) {
+        item(key = "recent_section") {
+            HomeRecentSection(recentTools = uiState.recentTools, onItemClick = onItemClick)
+        }
+    }
+}
+
+@Composable
+private fun HomeEmptyFilteredState(hasActiveFilter: Boolean, onResetFilters: () -> Unit) {
+    EmptyStateView(
+        title = stringResource(R.string.feature_home_empty_title),
+        description = stringResource(R.string.feature_home_empty_desc),
+        actionLabel = if (hasActiveFilter) {
+            stringResource(R.string.feature_home_action_reset_filter)
+        } else {
+            null
+        },
+        onAction = if (hasActiveFilter) onResetFilters else null,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 @Composable
@@ -521,6 +562,7 @@ private fun HomeToolDetailPane(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .imePadding()
                 .padding(ToolboxSpacing.large),
             contentAlignment = Alignment.Center,
         ) {
@@ -540,6 +582,7 @@ private fun HomeToolDetailPane(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .imePadding()
             .verticalScroll(rememberScrollState())
             .padding(ToolboxSpacing.large),
         verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.medium),

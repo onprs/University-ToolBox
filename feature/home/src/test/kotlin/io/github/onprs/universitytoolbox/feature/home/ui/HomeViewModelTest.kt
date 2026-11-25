@@ -33,6 +33,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -65,7 +66,14 @@ class HomeViewModelTest {
             return true
         }
 
-        override suspend fun setFavorite(toolId: String, isFavorite: Boolean) = Unit
+        override suspend fun setFavorite(toolId: String, isFavorite: Boolean) {
+            val current = favorites.value.filterNot { it.toolId == toolId }
+            favorites.value = if (isFavorite) {
+                current + FavoriteToolEntity(toolId, 100L)
+            } else {
+                current
+            }
+        }
 
         override fun observeRecentToolUsages(limit: Int): Flow<List<RecentToolUsageEntity>> = recents
 
@@ -219,6 +227,71 @@ class HomeViewModelTest {
             advanceUntilIdle()
             assertTrue("gpa_calculator" in metadata.openedTools)
             assertTrue("gpa_calculator" in shortcuts.reportedUsedIds)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `toggleFavorite unpins tool accurately even when filtered out of current search`() = runTest {
+        val gpaTool = ToolDescriptor(
+            id = "gpa_calculator",
+            titleRes = 1,
+            descriptionRes = 2,
+            category = ToolCategory.ACADEMIC,
+            requiredTier = LicenseTier.FREE,
+            entryKey = GpaKey,
+            isPinnedByDefault = true,
+            sortOrder = 1,
+        )
+        val qrTool = ToolDescriptor(
+            id = "qrcode_studio",
+            titleRes = 3,
+            descriptionRes = 4,
+            category = ToolCategory.MEDIA_UTILITY,
+            requiredTier = LicenseTier.FREE,
+            entryKey = QrKey,
+            sortOrder = 2,
+        )
+        val licenseState = MutableStateFlow<LicenseState>(
+            LicenseState.Unlocked(
+                LicenseEntitlement("SN-PIN", LicenseTier.FREE, setOf("*"), 1, null, false),
+            ),
+        )
+        val engine = object : LicenseEngine {
+            override val state: StateFlow<LicenseState> = licenseState
+            override suspend fun getDeviceChallenge(): String = "DEV"
+            override suspend fun activate(rawKeyInput: String) = Result.failure<LicenseEntitlement>(Exception())
+            override suspend fun syncTrustedNetworkTime(serverEpochSec: Long) = Unit
+            override suspend fun updateRevokedList(revokedIds: Set<String>) = Unit
+            override suspend fun clearLicense() = Unit
+        }
+        val viewModel = HomeViewModel(
+            toolRegistry = DefaultToolRegistry(setOf(gpaTool, qrTool)),
+            licenseCoordinator = LicenseCoordinator(engine),
+            metadataRepository = FakeMetadataRepository(),
+            remoteGovernanceRepository = FakeGovernanceRepo(),
+            toolTextResolver = object : ToolTextResolver {
+                override fun getTitle(tool: ToolDescriptor): String =
+                    if (tool.id == "gpa_calculator") "学分绩点计算器" else "条码检视工作台"
+                override fun getDescription(tool: ToolDescriptor): String = ""
+            },
+            shortcutPublisher = FakeShortcutPublisher(),
+        )
+
+        viewModel.uiState.test {
+            skipItems(1)
+            awaitItem()
+
+            viewModel.updateSearchQuery("条码")
+            advanceUntilIdle()
+            val filteredToQr = expectMostRecentItem()
+            assertEquals(listOf("qrcode_studio"), filteredToQr.filteredTools.map { it.descriptor.id })
+            assertTrue(filteredToQr.pinnedTools.any { it.descriptor.id == "gpa_calculator" })
+
+            viewModel.toggleFavorite("gpa_calculator")
+            advanceUntilIdle()
+            val afterUnpin = expectMostRecentItem()
+            assertFalse(afterUnpin.pinnedTools.any { it.descriptor.id == "gpa_calculator" })
             cancelAndIgnoreRemainingEvents()
         }
     }

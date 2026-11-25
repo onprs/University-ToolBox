@@ -22,9 +22,10 @@
     <string name="feature_home_action_unpin">取消置顶</string>
     <string name="feature_home_empty_title">未找到匹配工具</string>
     <string name="feature_home_empty_desc">可尝试切换分类筛选或更换关键词、拼音首字母。</string>
+    <string name="feature_home_action_reset_filter">清空检索条件</string>
     <string name="feature_home_detail_placeholder">选择左侧任意工具查看功能简介与快速操作。</string>
     <string name="feature_home_detail_required_tier">所需授权等级：%1$s</string>
     <string name="feature_home_detail_last_used">最近使用记录</string>
-    <string name="feature_home_detail_disabled_default">该工具当前处于远程维护熔断状态，请稍后再试。</string>
+    <string name="feature_home_detail_disabled_default">该工具当前正在维护，请稍后再试。</string>
     <string name="feature_home_detail_back">返回列表</string>
 </resources>

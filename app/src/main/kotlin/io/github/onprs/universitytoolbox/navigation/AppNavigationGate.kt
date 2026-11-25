@@ -1,6 +1,7 @@
 package io.github.onprs.universitytoolbox.navigation
 
 import androidx.navigation3.runtime.NavKey
+import io.github.onprs.universitytoolbox.core.common.time.TimeProvider
 import io.github.onprs.universitytoolbox.core.license.api.AccessDecision
 import io.github.onprs.universitytoolbox.core.license.api.AccessDenialReason
 import io.github.onprs.universitytoolbox.core.license.api.LicenseCoordinator
@@ -52,12 +53,25 @@ data class GateUpdate(val phase: GateUiPhase, val effects: List<GateEffect> = em
 /**
  * 宿主响应式路由守卫状态机。
  * 保证在 [LicenseState.Initializing] 与 [LicenseState.Locked] 态绝不越权打开内部工具，
- * 并在 [LicenseState.Unlocked] 态统一执行 Tier、Scope 与远程熔断开关校验。
+ * 并在 [LicenseState.Unlocked] 态统一执行 Tier、Scope、远程熔断开关校验及连点防重。
  */
-class AppNavigationGate @Inject constructor(
+class AppNavigationGate(
     private val licenseCoordinator: LicenseCoordinator,
     private val toolRegistry: ToolRegistry,
+    private val timeProvider: TimeProvider,
+    private val navigationDebounceMs: Long = DEFAULT_NAVIGATION_DEBOUNCE_MS,
 ) {
+    @Inject
+    constructor(
+        licenseCoordinator: LicenseCoordinator,
+        toolRegistry: ToolRegistry,
+    ) : this(
+        licenseCoordinator = licenseCoordinator,
+        toolRegistry = toolRegistry,
+        timeProvider = TimeProvider.System,
+        navigationDebounceMs = DEFAULT_NAVIGATION_DEBOUNCE_MS,
+    )
+
     private var lastLicenseState: LicenseState = LicenseState.Initializing
     private var disabledTools: Map<String, String?> = emptyMap()
     private var pendingActivationCode: String? = null
@@ -67,10 +81,13 @@ class AppNavigationGate @Inject constructor(
     private var pendingUpgradeEntryKey: NavKey? = null
     private val unlockedBackStack: MutableList<NavKey> = mutableListOf()
     private val pendingEffects: MutableList<GateEffect> = mutableListOf()
+    private var lastNavigationToken: Any? = null
+    private var lastNavigationAtMs: Long = Long.MIN_VALUE
 
     fun syncState(licenseState: LicenseState, disabledTools: Map<String, String?>): GateUpdate {
         lastLicenseState = licenseState
         this.disabledTools = disabledTools
+        resetRapidNavigationGuard()
 
         when (licenseState) {
             LicenseState.Initializing -> Unit
@@ -86,7 +103,11 @@ class AppNavigationGate @Inject constructor(
     }
 
     fun handleDeepLink(rawUri: String?): GateUpdate {
-        val target = DeepLinkParser.parse(rawUri) ?: return buildUpdate()
+        val trimmedUri = rawUri?.trim()?.takeIf { it.isNotEmpty() } ?: return buildUpdate()
+        if (isDuplicateRapidNavigation("deeplink:$trimmedUri")) {
+            return buildUpdate()
+        }
+        val target = DeepLinkParser.parse(trimmedUri) ?: return buildUpdate()
         when (target) {
             is DeepLinkTarget.Activation -> handleActivationDeepLink(target.activationCode)
             is DeepLinkTarget.Tool -> handleToolDeepLink(target.toolId, target.customEntryKey)
@@ -95,7 +116,7 @@ class AppNavigationGate @Inject constructor(
     }
 
     fun openToolByEntryKey(entryKey: NavKey): GateUpdate {
-        if (lastLicenseState !is LicenseState.Unlocked) {
+        if (lastLicenseState !is LicenseState.Unlocked || isDuplicateRapidNavigation(entryKey)) {
             return buildUpdate()
         }
         val descriptor = toolRegistry.allTools().firstOrNull { it.entryKey == entryKey }
@@ -108,29 +129,36 @@ class AppNavigationGate @Inject constructor(
     }
 
     fun openSettings(): GateUpdate {
-        if (lastLicenseState is LicenseState.Unlocked && unlockedBackStack.lastOrNull() != SettingsNavKey) {
+        if (lastLicenseState !is LicenseState.Unlocked || isDuplicateRapidNavigation(SettingsNavKey)) {
+            return buildUpdate()
+        }
+        if (unlockedBackStack.lastOrNull() != SettingsNavKey) {
+            unlockedBackStack.removeAll { it == SettingsNavKey }
             unlockedBackStack.add(SettingsNavKey)
         }
         return buildUpdate()
     }
 
     fun openUnlock(initialActivationCode: String?, manageMode: Boolean): GateUpdate {
+        val targetKey = UnlockNavKey(
+            initialActivationCode = initialActivationCode,
+            manageMode = manageMode,
+        )
         if (lastLicenseState !is LicenseState.Unlocked) {
             if (!initialActivationCode.isNullOrBlank()) {
                 pendingActivationCode = initialActivationCode
             }
             return buildUpdate()
         }
-        pushOrReplaceTopUnlock(
-            UnlockNavKey(
-                initialActivationCode = initialActivationCode,
-                manageMode = manageMode,
-            ),
-        )
+        if (isDuplicateRapidNavigation(targetKey)) {
+            return buildUpdate()
+        }
+        pushOrReplaceTopUnlock(targetKey)
         return buildUpdate()
     }
 
     fun popBack(): GateUpdate {
+        resetRapidNavigationGuard()
         if (lastLicenseState is LicenseState.Unlocked && unlockedBackStack.size > 1) {
             val removed = unlockedBackStack.removeAt(unlockedBackStack.lastIndex)
             if (removed is UnlockNavKey) {
@@ -142,6 +170,26 @@ class AppNavigationGate @Inject constructor(
     }
 
     fun canPopBack(): Boolean = lastLicenseState is LicenseState.Unlocked && unlockedBackStack.size > 1
+
+    private fun isDuplicateRapidNavigation(token: Any): Boolean {
+        if (navigationDebounceMs <= 0L) {
+            return false
+        }
+        val nowMs = timeProvider.currentTimeMillis()
+        val isRapidRepeat = token == lastNavigationToken &&
+            lastNavigationAtMs != Long.MIN_VALUE &&
+            nowMs - lastNavigationAtMs in 0 until navigationDebounceMs
+        if (!isRapidRepeat) {
+            lastNavigationToken = token
+            lastNavigationAtMs = nowMs
+        }
+        return isRapidRepeat
+    }
+
+    private fun resetRapidNavigationGuard() {
+        lastNavigationToken = null
+        lastNavigationAtMs = Long.MIN_VALUE
+    }
 
     private fun syncUnlockedStateLocked() {
         pendingActivationCode = null
@@ -166,7 +214,9 @@ class AppNavigationGate @Inject constructor(
                 val targetKey = pendingUpgradeEntryKey ?: descriptor.entryKey
                 pendingUpgradeToolId = null
                 pendingUpgradeEntryKey = null
-                unlockedBackStack[unlockedBackStack.lastIndex] = targetKey
+                unlockedBackStack.removeAt(unlockedBackStack.lastIndex)
+                unlockedBackStack.removeAll { it == targetKey }
+                unlockedBackStack.add(targetKey)
                 pendingEffects.add(GateEffect.RecordToolOpened(descriptor.id))
             }
         }
@@ -236,12 +286,20 @@ class AppNavigationGate @Inject constructor(
                 pendingUpgradeEntryKey = null
                 val targetKey = customEntryKey ?: descriptor.entryKey
                 val currentTop = unlockedBackStack.lastOrNull()
+                var didNavigate = false
                 if (currentTop is ChaoxingNavKey.Accounts && targetKey is ChaoxingNavKey.Accounts) {
-                    unlockedBackStack[unlockedBackStack.lastIndex] = targetKey
+                    if (currentTop != targetKey) {
+                        unlockedBackStack[unlockedBackStack.lastIndex] = targetKey
+                        didNavigate = true
+                    }
                 } else if (currentTop != targetKey) {
+                    unlockedBackStack.removeAll { it == targetKey }
                     unlockedBackStack.add(targetKey)
+                    didNavigate = true
                 }
-                pendingEffects.add(GateEffect.RecordToolOpened(descriptor.id))
+                if (didNavigate) {
+                    pendingEffects.add(GateEffect.RecordToolOpened(descriptor.id))
+                }
             }
 
             is AccessDecision.Denied -> handleDeniedTool(descriptor.id, decision.reason, customEntryKey)
@@ -272,6 +330,7 @@ class AppNavigationGate @Inject constructor(
         if (unlockedBackStack.lastOrNull() is UnlockNavKey) {
             unlockedBackStack[unlockedBackStack.lastIndex] = targetKey
         } else {
+            unlockedBackStack.removeAll { it is UnlockNavKey }
             unlockedBackStack.add(targetKey)
         }
     }
@@ -293,5 +352,9 @@ class AppNavigationGate @Inject constructor(
         val drainedEffects = pendingEffects.toList()
         pendingEffects.clear()
         return GateUpdate(phase = phase, effects = drainedEffects)
+    }
+
+    companion object {
+        const val DEFAULT_NAVIGATION_DEBOUNCE_MS = 350L
     }
 }

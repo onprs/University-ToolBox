@@ -1,21 +1,27 @@
 package io.github.onprs.universitytoolbox
 
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -63,7 +69,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         if (savedInstanceState == null) {
-            mainViewModel.onIncomingUri(intent?.dataString)
+            consumeIncomingIntent(intent)
         }
 
         setContent {
@@ -95,6 +101,24 @@ class MainActivity : AppCompatActivity() {
                 ThemeMode.DARK -> true
             }
 
+            DisposableEffect(isDarkTheme) {
+                val statusBarStyle = if (isDarkTheme) {
+                    SystemBarStyle.dark(Color.TRANSPARENT)
+                } else {
+                    SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+                }
+                val navigationBarStyle = if (isDarkTheme) {
+                    SystemBarStyle.dark(defaultDarkScrim)
+                } else {
+                    SystemBarStyle.light(defaultLightScrim, defaultDarkScrim)
+                }
+                enableEdgeToEdge(
+                    statusBarStyle = statusBarStyle,
+                    navigationBarStyle = navigationBarStyle,
+                )
+                onDispose {}
+            }
+
             UniversityToolboxTheme(
                 darkTheme = isDarkTheme,
                 dynamicColor = uiState.userPreferences.useDynamicColor,
@@ -106,7 +130,12 @@ class MainActivity : AppCompatActivity() {
                     onOpenTool = mainViewModel::openTool,
                     onOpenSettings = mainViewModel::openSettings,
                     onOpenUnlock = mainViewModel::openUnlock,
-                    onPopBack = mainViewModel::popBack,
+                    onPopBack = {
+                        if (!mainViewModel.popBackIfPossible()) {
+                            finish()
+                        }
+                    },
+                    onExitApp = ::finish,
                 )
             }
         }
@@ -114,8 +143,23 @@ class MainActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        setIntent(intent)
-        mainViewModel.onIncomingUri(intent.dataString)
+        val rawUri = intent.dataString
+        val sanitizedIntent = Intent(intent).apply {
+            data = null
+        }
+        setIntent(sanitizedIntent)
+        mainViewModel.onIncomingUri(rawUri)
+    }
+
+    private fun consumeIncomingIntent(incomingIntent: Intent?) {
+        val rawUri = incomingIntent?.dataString ?: return
+        incomingIntent.data = null
+        mainViewModel.onIncomingUri(rawUri)
+    }
+
+    private companion object {
+        val defaultLightScrim = Color.argb(0xE6, 0xFF, 0xFF, 0xFF)
+        val defaultDarkScrim = Color.argb(0x80, 0x1B, 0x1B, 0x1B)
     }
 }
 
@@ -128,6 +172,7 @@ private fun ToolboxHostContent(
     onOpenSettings: () -> Unit,
     onOpenUnlock: (initialCode: String?, manageMode: Boolean) -> Unit,
     onPopBack: () -> Unit,
+    onExitApp: () -> Unit,
 ) {
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -142,7 +187,10 @@ private fun ToolboxHostContent(
                 }
 
                 is GateUiPhase.Locked -> {
-                    LockedNavigationHost(phase = phase)
+                    LockedNavigationHost(
+                        phase = phase,
+                        onExitApp = onExitApp,
+                    )
                 }
 
                 is GateUiPhase.Unlocked -> {
@@ -161,15 +209,14 @@ private fun ToolboxHostContent(
                 hostState = snackbarHostState,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .imePadding(),
+                    .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
             )
         }
     }
 }
 
 @Composable
-private fun LockedNavigationHost(phase: GateUiPhase.Locked) {
+private fun LockedNavigationHost(phase: GateUiPhase.Locked, onExitApp: () -> Unit) {
     val lockedBackStack = remember(phase.initialActivationCode) {
         listOf<NavKey>(
             UnlockNavKey(
@@ -181,7 +228,7 @@ private fun LockedNavigationHost(phase: GateUiPhase.Locked) {
 
     NavDisplay(
         backStack = lockedBackStack,
-        onBack = {},
+        onBack = onExitApp,
         entryDecorators = listOf(
             rememberSaveableStateHolderNavEntryDecorator(),
             rememberViewModelStoreNavEntryDecorator(),

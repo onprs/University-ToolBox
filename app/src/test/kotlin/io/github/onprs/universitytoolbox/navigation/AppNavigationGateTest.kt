@@ -208,7 +208,73 @@ class AppNavigationGateTest {
         )
     }
 
-    private fun createGate(engine: FakeLicenseEngine): AppNavigationGate {
+    @Test
+    fun `rapid double tap suppresses duplicate entries and duplicate effects until popped or window elapses`() {
+        var nowMs = 5_000L
+        val freeState = LicenseState.Unlocked(entitlement(LicenseTier.FREE))
+        val fakeEngine = FakeLicenseEngine(freeState)
+        val gate = createGate(
+            engine = fakeEngine,
+            gateClock = TimeProvider { nowMs },
+        )
+        gate.syncState(freeState, emptyMap())
+
+        val firstTap = gate.openToolByEntryKey(GpaNavKey)
+        assertEquals(listOf<NavKey>(HomeNavKey, GpaNavKey), (firstTap.phase as GateUiPhase.Unlocked).backStack)
+        assertEquals(1, firstTap.effects.count { it == GateEffect.RecordToolOpened(GPA_TOOL_ID) })
+
+        // 毫秒级连点同一工具：不重复入栈，也不重复产生打开计数副作用
+        nowMs += 80L
+        val secondTap = gate.openToolByEntryKey(GpaNavKey)
+        assertEquals(listOf<NavKey>(HomeNavKey, GpaNavKey), (secondTap.phase as GateUiPhase.Unlocked).backStack)
+        assertTrue(secondTap.effects.isEmpty())
+
+        // 即使超过防抖窗口，若当前栈顶已是该工具，仍不重复入栈或重复记数
+        nowMs += 500L
+        val topRepeatTap = gate.openToolByEntryKey(GpaNavKey)
+        assertEquals(listOf<NavKey>(HomeNavKey, GpaNavKey), (topRepeatTap.phase as GateUiPhase.Unlocked).backStack)
+        assertTrue(topRepeatTap.effects.isEmpty())
+
+        // 返回首页后立即重新点击同一工具可正常进入
+        gate.popBack()
+        val reopenAfterPop = gate.openToolByEntryKey(GpaNavKey)
+        assertEquals(listOf<NavKey>(HomeNavKey, GpaNavKey), (reopenAfterPop.phase as GateUiPhase.Unlocked).backStack)
+        assertEquals(1, reopenAfterPop.effects.count { it == GateEffect.RecordToolOpened(GPA_TOOL_ID) })
+    }
+
+    @Test
+    fun `reopening settings or unlock deduplicates existing route in back stack`() {
+        var nowMs = 10_000L
+        val standardState = LicenseState.Unlocked(entitlement(LicenseTier.STANDARD))
+        val fakeEngine = FakeLicenseEngine(standardState)
+        val gate = createGate(
+            engine = fakeEngine,
+            gateClock = TimeProvider { nowMs },
+        )
+        gate.syncState(standardState, emptyMap())
+
+        gate.openSettings()
+        nowMs += 500L
+        gate.openUnlock("CODE-1", manageMode = true)
+        nowMs += 500L
+        val reopenedSettings = gate.openSettings()
+        assertEquals(
+            listOf<NavKey>(HomeNavKey, UnlockNavKey("CODE-1", manageMode = true), SettingsNavKey),
+            (reopenedSettings.phase as GateUiPhase.Unlocked).backStack,
+        )
+
+        nowMs += 500L
+        val reopenedUnlock = gate.openUnlock("CODE-2", manageMode = true)
+        assertEquals(
+            listOf<NavKey>(HomeNavKey, SettingsNavKey, UnlockNavKey("CODE-2", manageMode = true)),
+            (reopenedUnlock.phase as GateUiPhase.Unlocked).backStack,
+        )
+    }
+
+    private fun createGate(
+        engine: FakeLicenseEngine,
+        gateClock: TimeProvider = TimeProvider { FIXED_EPOCH_SEC * 1_000L },
+    ): AppNavigationGate {
         val coordinator = LicenseCoordinator(
             licenseEngine = engine,
             timeProvider = TimeProvider { FIXED_EPOCH_SEC },
@@ -241,7 +307,11 @@ class AppNavigationGateTest {
                 ),
             ),
         )
-        return AppNavigationGate(coordinator, registry)
+        return AppNavigationGate(
+            licenseCoordinator = coordinator,
+            toolRegistry = registry,
+            timeProvider = gateClock,
+        )
     }
 
     private fun entitlement(tier: LicenseTier): LicenseEntitlement = LicenseEntitlement(

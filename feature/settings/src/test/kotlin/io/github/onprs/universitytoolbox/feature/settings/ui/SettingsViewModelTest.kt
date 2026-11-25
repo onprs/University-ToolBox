@@ -202,6 +202,8 @@ class SettingsViewModelTest {
         val updateManager = FakeUpdateManager()
         val appliedLanguages = mutableListOf<AppLanguage>()
         var cacheBytes = 2048L
+        var locationGranted = false
+        var notificationsGranted = false
 
         val platformFacade = SettingsPlatformFacade(
             versionInfoProvider = object : AppVersionInfoProvider {
@@ -211,8 +213,13 @@ class SettingsViewModelTest {
                 override fun checkPermissions() = listOf(
                     PermissionStatusItem(PermissionKind.CAMERA, isGranted = true),
                     PermissionStatusItem(
+                        kind = PermissionKind.LOCATION,
+                        isGranted = locationGranted,
+                        requiresSystemSettings = !locationGranted,
+                    ),
+                    PermissionStatusItem(
                         kind = PermissionKind.NOTIFICATIONS,
-                        isGranted = false,
+                        isGranted = notificationsGranted,
                         requiresSystemSettings = true,
                     ),
                 )
@@ -286,6 +293,63 @@ class SettingsViewModelTest {
             advanceUntilIdle()
             val afterClearLogs = expectMostRecentItem()
             assertTrue(afterClearLogs.diagnosticReportPreview.contains("(No diagnostic audit entries)"))
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `refreshRuntimeStatus updates location and notification permissions on resume`() = runTest {
+        var locationGranted = false
+        var notificationsGranted = false
+        val engine = object : LicenseEngine {
+            override val state: StateFlow<LicenseState> = MutableStateFlow(LicenseState.Initializing)
+            override suspend fun getDeviceChallenge(): String = "DEV"
+            override suspend fun activate(rawKeyInput: String) = Result.failure<LicenseEntitlement>(Exception())
+            override suspend fun syncTrustedNetworkTime(serverEpochSec: Long) = Unit
+            override suspend fun updateRevokedList(revokedIds: Set<String>) = Unit
+            override suspend fun clearLicense() = Unit
+        }
+        val platformFacade = SettingsPlatformFacade(
+            versionInfoProvider = object : AppVersionInfoProvider {
+                override fun getVersionInfo() = AppVersionInfo("1.0.0", 1_000_000L)
+            },
+            permissionStatusProvider = object : PermissionStatusProvider {
+                override fun checkPermissions() = listOf(
+                    PermissionStatusItem(PermissionKind.LOCATION, isGranted = locationGranted),
+                    PermissionStatusItem(PermissionKind.NOTIFICATIONS, isGranted = notificationsGranted),
+                )
+            },
+            appLocaleController = object : AppLocaleController {
+                override fun applyLanguage(language: AppLanguage) = Unit
+            },
+            appCacheController = object : AppCacheController {
+                override fun measureCacheBytes(): Long = 0L
+                override fun clearCache() = CacheCleanupResult(0L, 0L, 0)
+            },
+        )
+        val viewModel = SettingsViewModel(
+            userPreferencesRepository = FakeUserPreferencesRepository(),
+            licenseCoordinator = LicenseCoordinator(engine),
+            metadataRepository = FakeMetadataRepository(),
+            remoteGovernanceRepository = FakeGovernanceRepository(),
+            appUpdateManager = FakeUpdateManager(),
+            platformFacade = platformFacade,
+            timeProvider = TimeProvider { 1_700_000_000_000L },
+        )
+
+        viewModel.uiState.test {
+            skipItems(1)
+            val initial = awaitItem()
+            assertFalse(initial.permissions.first { it.kind == PermissionKind.LOCATION }.isGranted)
+            assertFalse(initial.permissions.first { it.kind == PermissionKind.NOTIFICATIONS }.isGranted)
+
+            locationGranted = true
+            notificationsGranted = true
+            viewModel.refreshRuntimeStatus()
+            advanceUntilIdle()
+            val refreshed = expectMostRecentItem()
+            assertTrue(refreshed.permissions.first { it.kind == PermissionKind.LOCATION }.isGranted)
+            assertTrue(refreshed.permissions.first { it.kind == PermissionKind.NOTIFICATIONS }.isGranted)
             cancelAndIgnoreRemainingEvents()
         }
     }

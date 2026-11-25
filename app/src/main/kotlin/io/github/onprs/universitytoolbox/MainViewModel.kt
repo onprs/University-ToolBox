@@ -103,6 +103,17 @@ class MainViewModel @Inject constructor(
         applyGateUpdate(navigationGate.popBack())
     }
 
+    /**
+     * 若当前解锁导航栈深度大于 1 则弹出栈顶并返回 true；若已在根页则返回 false 交由宿主退出。
+     */
+    fun popBackIfPossible(): Boolean {
+        if (!navigationGate.canPopBack()) {
+            return false
+        }
+        applyGateUpdate(navigationGate.popBack())
+        return true
+    }
+
     private fun applyGateUpdate(update: GateUpdate) {
         mutableUiState.update { it.copy(gatePhase = update.phase) }
         update.effects.forEach { effect ->
@@ -111,6 +122,13 @@ class MainViewModel @Inject constructor(
                     shortcutPublisher.reportToolUsed(effect.toolId)
                     viewModelScope.launch {
                         metadataRepository.recordToolUsage(effect.toolId)
+                        metadataRepository.logAuditEvent(
+                            category = "TOOL",
+                            action = "OPEN",
+                            status = "SUCCESS",
+                            summary = "Opened tool ${effect.toolId}",
+                            toolId = effect.toolId,
+                        )
                     }
                 }
                 is GateEffect.ShowToolDisabledNotice,
