@@ -8,7 +8,7 @@ android {
 }
 
 dependencies {
-    api(projects.core.licenseApi)
+    api(libs.universitytoolbox.core.license.api)
     api(libs.androidx.navigation3.runtime)
     implementation(libs.androidx.compose.runtime)
     implementation(libs.androidx.core.ktx)

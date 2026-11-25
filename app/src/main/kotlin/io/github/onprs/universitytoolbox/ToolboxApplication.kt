@@ -1,0 +1,42 @@
+package io.github.onprs.universitytoolbox
+
+import android.app.Application
+import android.content.Context
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
+import coil3.ImageLoader
+import coil3.SingletonImageLoader
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
+import dagger.hilt.android.HiltAndroidApp
+import io.github.onprs.universitytoolbox.core.network.RootHttpClient
+import javax.inject.Inject
+import javax.inject.Provider
+import okhttp3.OkHttpClient
+
+/**
+ * 宿主应用入口：初始化 Hilt 根容器、按需配置 WorkManager 及共享连接池的 Coil 3 图片加载器。
+ */
+@HiltAndroidApp
+class ToolboxApplication :
+    Application(),
+    Configuration.Provider,
+    SingletonImageLoader.Factory {
+
+    @Inject
+    lateinit var workerFactoryProvider: Provider<HiltWorkerFactory>
+
+    @Inject
+    @field:RootHttpClient
+    lateinit var rootHttpClientProvider: Provider<OkHttpClient>
+
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setWorkerFactory(workerFactoryProvider.get())
+            .build()
+
+    override fun newImageLoader(context: Context): ImageLoader = ImageLoader.Builder(context)
+        .components {
+            add(OkHttpNetworkFetcherFactory(callFactory = { rootHttpClientProvider.get() }))
+        }
+        .build()
+}

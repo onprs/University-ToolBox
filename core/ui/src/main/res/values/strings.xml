@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="core_ui_loading_default">Loading…</string>
+    <string name="core_ui_retry_action">Retry</string>
+    <string name="core_ui_unlock_action">Activate / Upgrade</string>
+    <string name="core_ui_grant_permission">Grant Permission</string>
+    <string name="core_ui_open_settings">Open Settings</string>
+    <string name="core_ui_tier_free">Free</string>
+    <string name="core_ui_tier_standard">Standard</string>
+    <string name="core_ui_tier_pro">Pro</string>
+    <string name="core_ui_tier_full">Full</string>
+    <string name="core_ui_locked_not_activated">Activation is required to use this tool.</string>
+    <string name="core_ui_locked_expired">Your license has expired. Please renew or reactivate.</string>
+    <string name="core_ui_locked_clock_rollback">System clock rollback detected. Please check your device time and network connection.</string>
+    <string name="core_ui_locked_revoked">Your current license has been revoked. Please activate a valid key.</string>
+    <string name="core_ui_locked_invalid_signature">License verification failed. Please enter a valid activation key.</string>
+    <string name="core_ui_locked_insufficient_tier">Requires %1$s tier or higher (current: %2$s).</string>
+    <string name="core_ui_locked_missing_scope">Your current license does not include access to this tool.</string>
+    <string name="core_ui_locked_initializing">Verifying license status…</string>
+    <string name="core_ui_locked_remotely_disabled">Temporarily unavailable due to maintenance.</string>
+    <string name="core_ui_dev_stub_badge">DEV STUB</string>
+</resources>

@@ -8,8 +8,8 @@ android {
 }
 
 dependencies {
-    implementation(projects.core.common)
-    implementation(projects.core.licenseApi)
+    implementation(libs.universitytoolbox.core.common)
+    implementation(libs.universitytoolbox.core.license.api)
     implementation(libs.kotlinx.coroutines.core)
 
     testImplementation(libs.junit)

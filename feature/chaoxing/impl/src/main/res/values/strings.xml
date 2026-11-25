@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chaoxing_tool_title">Course Attendance</string>
+    <string name="chaoxing_tool_description">Multi-account courses, attendance monitoring, and check-in assistant</string>
+    <string name="chaoxing_dashboard_title">Course Attendance</string>
+    <string name="chaoxing_accounts_title">Account Management</string>
+    <string name="chaoxing_activities_title">Course Activities</string>
+    <string name="chaoxing_sign_execution_title">Check-in Execution</string>
+    <string name="chaoxing_records_title">Check-in Records</string>
+    <string name="chaoxing_add_account">Bind Account</string>
+    <string name="chaoxing_refresh">Refresh</string>
+    <string name="chaoxing_search_courses_hint">Search courses or teachers</string>
+    <string name="chaoxing_show_archived">Show archived courses</string>
+    <string name="chaoxing_empty_accounts_title">No linked accounts yet</string>
+    <string name="chaoxing_empty_accounts_desc">Add a primary account to browse courses and monitor active check-ins.</string>
+    <string name="chaoxing_empty_courses_title">No courses available</string>
+    <string name="chaoxing_empty_courses_desc">Pull or tap refresh to sync your enrolled courses.</string>
+    <string name="chaoxing_empty_activities_title">No activities yet</string>
+    <string name="chaoxing_empty_activities_desc">Tap refresh or enable automatic monitoring to detect active check-ins.</string>
+    <string name="chaoxing_empty_records_title">No check-in records</string>
+    <string name="chaoxing_empty_records_desc">Executed check-ins will appear here with status summaries.</string>
+    <string name="chaoxing_back">Back</string>
+</resources>

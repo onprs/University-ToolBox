@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="feature_gpa_tool_title">学分绩点计算器</string>
+    <string name="feature_gpa_tool_description">支持北大 4.0、标准 4.0、WES 等多种算法，计算加权均分并反推目标绩点所需分数。</string>
+    <string name="feature_gpa_screen_title">学分绩点计算器</string>
+    <string name="feature_gpa_tab_courses">课程计分</string>
+    <string name="feature_gpa_tab_target">目标反推</string>
+    <string name="feature_gpa_scale_label">绩点算法</string>
+    <string name="feature_gpa_scale_pku">北大 4.0</string>
+    <string name="feature_gpa_scale_standard_40">标准 4.0</string>
+    <string name="feature_gpa_scale_wes_40">WES 4.0</string>
+    <string name="feature_gpa_scale_standard_43">4.3 制</string>
+    <string name="feature_gpa_scale_five_point">五分制</string>
+    <string name="feature_gpa_summary_gpa">综合绩点</string>
+    <string name="feature_gpa_summary_weighted">加权均分</string>
+    <string name="feature_gpa_summary_arithmetic">算术均分</string>
+    <string name="feature_gpa_summary_credits">总学分：%1$s（已计入 %2$d 门）</string>
+    <string name="feature_gpa_add_course">添加课程</string>
+    <string name="feature_gpa_edit_course">编辑课程</string>
+    <string name="feature_gpa_course_name">课程名称</string>
+    <string name="feature_gpa_course_credits">学分</string>
+    <string name="feature_gpa_course_score">百分制成绩</string>
+    <string name="feature_gpa_quick_grade">等级快捷填入</string>
+    <string name="feature_gpa_save">保存</string>
+    <string name="feature_gpa_cancel">取消</string>
+    <string name="feature_gpa_delete">删除</string>
+    <string name="feature_gpa_empty_title">暂未添加课程</string>
+    <string name="feature_gpa_empty_desc">点击右下角“添加课程”开始计算加权平均分与 GPA。</string>
+    <string name="feature_gpa_load_sample">填入参考课程</string>
+    <string name="feature_gpa_sample_course_1">高等数学</string>
+    <string name="feature_gpa_sample_course_2">大学英语</string>
+    <string name="feature_gpa_sample_course_3">数据结构</string>
+    <string name="feature_gpa_course_meta">%1$s 学分 · 成绩 %2$s · 绩点 %3$s</string>
+    <string name="feature_gpa_target_sync">从课程同步</string>
+    <string name="feature_gpa_target_completed_credits">已修学分</string>
+    <string name="feature_gpa_target_current_gpa">当前 GPA</string>
+    <string name="feature_gpa_target_planned_credits">后续计划学分</string>
+    <string name="feature_gpa_target_goal_gpa">目标总 GPA</string>
+    <string name="feature_gpa_target_status_secured">当前累积绩点已稳保目标达成。</string>
+    <string name="feature_gpa_target_status_achievable">后续需保持平均 GPA %1$s（约合百分制均分 %2$s 分）</string>
+    <string name="feature_gpa_target_status_exact_max">后续所有计划学分均需取得满分绩点（%1$s）。</string>
+    <string name="feature_gpa_target_status_unreachable">按计划学分无法达成目标，最高可达总 GPA 为 %1$s。</string>
+    <string name="feature_gpa_target_status_invalid">请输入有效的非负学分以及当前算法范围内的 GPA。</string>
+    <string name="feature_gpa_target_max_possible">理论最高可达 GPA：%1$s</string>
+    <string name="feature_gpa_back">返回</string>
+</resources>

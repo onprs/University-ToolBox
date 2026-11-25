@@ -48,6 +48,15 @@ val activePrivateDir = if (isRootBuild) {
 }
 val hasPrivateLicenseEngine = activePrivateDir != null && isRootBuild
 
+includeBuild("core-contracts") {
+    dependencySubstitution {
+        substitute(module("io.github.onprs.universitytoolbox:common"))
+            .using(project(":common"))
+        substitute(module("io.github.onprs.universitytoolbox:license-api"))
+            .using(project(":license-api"))
+    }
+}
+
 if (activePrivateDir != null && isRootBuild) {
     includeBuild(activePrivateDir) {
         dependencySubstitution {
@@ -62,8 +71,6 @@ gradle.extra["useProprietaryLicense"] = hasPrivateLicenseEngine
 val plannedModules = listOf(
     ":app",
     ":benchmark",
-    ":core:common",
-    ":core:license-api",
     ":core:license-stub",
     ":core:tool-api",
     ":core:designsystem",

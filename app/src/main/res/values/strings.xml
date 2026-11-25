@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">University ToolBox</string>
+    <string name="app_initializing_message">Preparing workspace…</string>
+    <string name="app_tool_locked_notice">Please activate or upgrade your license to open this tool.</string>
+    <string name="app_tool_remotely_disabled_default">This tool is temporarily unavailable due to maintenance.</string>
+    <string name="app_tool_not_found_notice">The requested tool is not available.</string>
+</resources>

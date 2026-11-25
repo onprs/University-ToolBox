@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="university_toolbox_tink_keyset_prefs.xml" />
+        <exclude domain="file" path="encrypted_datastore" />
+        <exclude domain="file" path="chaoxing_cookie_vault" />
+        <exclude domain="database" path="chaoxing_autonomous.db" />
+        <exclude domain="database" path="chaoxing_autonomous.db-wal" />
+        <exclude domain="database" path="chaoxing_autonomous.db-shm" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="university_toolbox_tink_keyset_prefs.xml" />
+        <exclude domain="file" path="encrypted_datastore" />
+        <exclude domain="file" path="chaoxing_cookie_vault" />
+        <exclude domain="database" path="chaoxing_autonomous.db" />
+        <exclude domain="database" path="chaoxing_autonomous.db-wal" />
+        <exclude domain="database" path="chaoxing_autonomous.db-shm" />
+    </device-transfer>
+</data-extraction-rules>

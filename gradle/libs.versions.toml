@@ -64,6 +64,10 @@ mockk = "1.14.12"
 turbine = "1.2.1"
 
 [libraries]
+# Internal Core Contracts
+universitytoolbox-core-common = { group = "io.github.onprs.universitytoolbox", name = "common", version = "0.1.0" }
+universitytoolbox-core-license-api = { group = "io.github.onprs.universitytoolbox", name = "license-api", version = "0.1.0" }
+
 # AndroidX Core & Activity
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "androidxCore" }
 androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "androidxCoreSplashscreen" }

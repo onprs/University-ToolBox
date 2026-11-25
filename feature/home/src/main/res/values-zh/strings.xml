@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="feature_home_title">高校百宝箱</string>
+    <string name="feature_home_search_hint">搜索工具名、关键词或拼音首字母</string>
+    <string name="feature_home_clear_search">清除搜索</string>
+    <string name="feature_home_open_settings">设置</string>
+    <string name="feature_home_open_license">授权管理</string>
+    <string name="feature_home_category_all">全部</string>
+    <string name="feature_home_category_academic">学业教务</string>
+    <string name="feature_home_category_efficiency">效率工具</string>
+    <string name="feature_home_category_media">媒体与实用</string>
+    <string name="feature_home_category_system">系统辅助</string>
+    <string name="feature_home_section_pinned">置顶收藏</string>
+    <string name="feature_home_section_recent">最近使用</string>
+    <string name="feature_home_section_all">全部工具</string>
+    <string name="feature_home_status_ready">可用</string>
+    <string name="feature_home_status_locked">需 %1$s</string>
+    <string name="feature_home_status_disabled">暂停服务</string>
+    <string name="feature_home_action_open">立即打开</string>
+    <string name="feature_home_action_unlock">前往升级解锁</string>
+    <string name="feature_home_action_pin">置顶</string>
+    <string name="feature_home_action_unpin">取消置顶</string>
+    <string name="feature_home_empty_title">未找到匹配工具</string>
+    <string name="feature_home_empty_desc">可尝试切换分类筛选或更换关键词、拼音首字母。</string>
+    <string name="feature_home_detail_placeholder">选择左侧任意工具查看功能简介与快速操作。</string>
+    <string name="feature_home_detail_required_tier">所需授权等级：%1$s</string>
+    <string name="feature_home_detail_last_used">最近使用记录</string>
+    <string name="feature_home_detail_disabled_default">该工具当前处于远程维护熔断状态，请稍后再试。</string>
+    <string name="feature_home_detail_back">返回列表</string>
+    <string name="feature_home_tier_free">免费版</string>
+    <string name="feature_home_tier_standard">标准版</string>
+    <string name="feature_home_tier_pro">专业版</string>
+    <string name="feature_home_tier_full">完整版</string>
+</resources>

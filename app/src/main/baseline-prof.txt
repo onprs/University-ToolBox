@@ -1,0 +1,22 @@
+# Application startup & DI
+HSPLio/github/onprs/universitytoolbox/ToolboxApplication;->**(**)**
+HSPLio/github/onprs/universitytoolbox/MainActivity;->**(**)**
+HSPLio/github/onprs/universitytoolbox/MainViewModel;->**(**)**
+
+# Global navigation & license gating
+HSPLio/github/onprs/universitytoolbox/navigation/**;->**(**)**
+HSPLio/github/onprs/universitytoolbox/core/license/api/LicenseCoordinator;->**(**)**
+HSPLio/github/onprs/universitytoolbox/core/license/api/LicenseTier;->**(**)**
+HSPLio/github/onprs/universitytoolbox/core/license/api/LicenseEntitlement;->**(**)**
+
+# Core theme & primary feature rendering
+HSPLio/github/onprs/universitytoolbox/core/designsystem/theme/**;->**(**)**
+HSPLio/github/onprs/universitytoolbox/core/ui/**;->**(**)**
+HSPLio/github/onprs/universitytoolbox/feature/home/ui/**;->**(**)**
+HSPLio/github/onprs/universitytoolbox/feature/unlock/ui/**;->**(**)**
+
+# Compose & Navigation 3 hot paths
+HSPLandroidx/compose/runtime/**;->**(**)**
+HSPLandroidx/compose/ui/**;->**(**)**
+HSPLandroidx/compose/material3/**;->**(**)**
+HSPLandroidx/navigation3/**;->**(**)**

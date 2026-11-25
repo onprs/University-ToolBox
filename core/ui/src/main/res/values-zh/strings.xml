@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="core_ui_loading_default">正在加载…</string>
+    <string name="core_ui_retry_action">重试</string>
+    <string name="core_ui_unlock_action">激活或升级</string>
+    <string name="core_ui_grant_permission">授予权限</string>
+    <string name="core_ui_open_settings">前往系统设置</string>
+    <string name="core_ui_tier_free">基础版</string>
+    <string name="core_ui_tier_standard">标准版</string>
+    <string name="core_ui_tier_pro">专业版</string>
+    <string name="core_ui_tier_full">旗舰版</string>
+    <string name="core_ui_locked_not_activated">需要激活授权后方可使用此工具。</string>
+    <string name="core_ui_locked_expired">当前授权已过期，请续期或重新激活。</string>
+    <string name="core_ui_locked_clock_rollback">检测到系统时间回拨，请校准设备时间并保持网络连接。</string>
+    <string name="core_ui_locked_revoked">当前授权凭证已失效，请更换有效授权码。</string>
+    <string name="core_ui_locked_invalid_signature">授权校验未通过，请重新输入有效授权码。</string>
+    <string name="core_ui_locked_insufficient_tier">需要 %1$s 及以上授权等级（当前：%2$s）。</string>
+    <string name="core_ui_locked_missing_scope">当前授权范围未包含此工具。</string>
+    <string name="core_ui_locked_initializing">正在核验授权状态…</string>
+    <string name="core_ui_locked_remotely_disabled">该功能当前正在维护，暂不可用。</string>
+    <string name="core_ui_dev_stub_badge">DEV STUB</string>
+</resources>
