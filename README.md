@@ -11,13 +11,16 @@ University-ToolBox 是一款面向高校师生的开源 Android 多功能工具�
 - **条码与二维码工作台**：支持相机实时扫码、相册选图解码与文本解析，结构化展示网页链接安全提示、Wi-Fi 配置、联系人、地理位置及 JSON 内容，支持敏感字段默认隐藏与历史记录管理。
 - **全局设置中心**：支持浅色/深色/跟随系统主题切换、动态取色、简体中文与英文应用内切换、权限状态查看、缓存清理、诊断日志预览与导出，以及应用更新检查。
 
-## 环境要求
+## 下载与安装
 
-- **JDK**：JDK 21
-- **Android SDK**：Android SDK Platform 36（Android 16）、Build-Tools `36.0.0`
-- **运行设备**：Android 8.0（API 26）及以上版本的 Android 设备或模拟器
+### 安装正式版 APK
 
-## 从源码编译与安装
+1. 前往 [GitHub Releases](https://github.com/onprs/University-ToolBox/releases/latest) 下载最新版本的 `university-toolbox-v*.apk` 安装包。
+2. 在 Android 8.0（API 26）及以上版本的 Android 设备上打开安装包完成安装。
+
+### 从源码编译调试版
+
+编译环境要求：JDK 21、Android SDK Platform 36（Android 16）及 Build-Tools `36.0.0`。
 
 1. 克隆项目仓库并进入根目录：
 
@@ -48,13 +51,13 @@ University-ToolBox 是一款面向高校师生的开源 Android 多功能工具�
 
 ## 基础使用说明
 
-1. 首次启动应用会进入授权激活引导页，可输入或扫描有效激活码，也可通过 `universitytoolbox://unlock?key=...` 深度链接填入激活口令。
+1. 首次启动应用会进入授权激活引导页，可复制本机设备码获取激活口令，通过粘贴口令、扫描二维码或打开 `universitytoolbox://unlock?key=...` 深度链接完成激活。
 2. 使用从源码编译的调试版本体验功能时，可输入以下调试口令解锁对应授权等级：
    - `DEV-FREE-UNLOCK`（免费版，可使用 GPA 计算器等基础工具）
    - `DEV-STD-UNLOCK`（标准版，额外解锁学习通课程助手与条码工作台）
    - `DEV-PRO-UNLOCK`（专业版）
    - `DEV-FULL-UNLOCK`（完整版）
-3. 解锁后可在首页浏览或检索工具、置顶常用工具，并可在右上角进入设置页切换深色模式、动态取色或应用语言。
+3. 解锁后可在首页浏览或检索工具、置顶常用工具，并可在右上角进入设置页切换深色模式、动态取色、应用语言或检查版本更新。
 
 ## 开源协议
 

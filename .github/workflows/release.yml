@@ -40,8 +40,8 @@ jobs:
           sdkmanager \
             "platforms;android-36" \
             "build-tools;36.0.0" \
-            "cmake;3.28.3" \
-            "ndk;28.2.13676358"
+            "cmake;3.22.1" \
+            "ndk;27.0.12077973"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -88,15 +88,29 @@ jobs:
           VERSION_CODE="$(grep -E 'versionCode\s*=' app/build.gradle.kts | head -n 1 | sed -E 's/[^0-9]//g')"
           APK_URL="https://github.com/${REPO_SLUG}/releases/download/${TAG_NAME}/${APK_FILENAME}"
 
-          python3 - <<'PY' "${VERSION_CODE}" "${VERSION_NAME}" "${APK_URL}" "${APK_SHA256}" "release-assets/update-manifest.json"
+          python3 - <<'PY' "${VERSION_CODE}" "${VERSION_NAME}" "${TAG_NAME}" "${APK_URL}" "${APK_SHA256}" "release-assets/update-manifest.json" "release-assets/release-notes.md"
           import json
+          import subprocess
           import sys
 
           version_code = int(sys.argv[1])
           version_name = sys.argv[2]
-          apk_url = sys.argv[3]
-          sha256 = sys.argv[4]
-          output_path = sys.argv[5]
+          tag_name = sys.argv[3]
+          apk_url = sys.argv[4]
+          sha256 = sys.argv[5]
+          manifest_path = sys.argv[6]
+          notes_path = sys.argv[7]
+
+          raw_notes = subprocess.check_output(
+              ["git", "tag", "-l", "--format=%(contents)", tag_name],
+              text=True,
+              encoding="utf-8",
+          ).strip()
+          if not raw_notes:
+              raw_notes = f"University-ToolBox {version_name}"
+
+          with open(notes_path, "w", encoding="utf-8") as fp:
+              fp.write(raw_notes + "\n")
 
           manifest = {
               "channel": "stable",
@@ -105,11 +119,11 @@ jobs:
               "minSupportedVersionCode": version_code,
               "apkUrl": apk_url,
               "sha256": sha256,
-              "changelog": f"Release {version_name}",
+              "changelog": raw_notes,
               "disabledTools": {},
               "revokedSerialIds": [],
           }
-          with open(output_path, "w", encoding="utf-8") as fp:
+          with open(manifest_path, "w", encoding="utf-8") as fp:
               json.dump(manifest, fp, ensure_ascii=False, indent=2)
               fp.write("\n")
           PY
@@ -121,7 +135,9 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          name: University-ToolBox ${{ github.ref_name }}
+          body_path: release-assets/release-notes.md
+          generate_release_notes: false
           files: |
             release-assets/*.apk
             release-assets/update-manifest.json

@@ -59,7 +59,7 @@
 
 ### 2.1 额外环境要求
 
-- 在公开环境依赖基础上，额外需要安装 Android NDK（如 `28.2.13676358`）与 CMake `3.28.3`，并在 `local.properties` 中按需补充 `cmake.dir`。
+- 在公开环境依赖基础上，额外需要安装 Android NDK `27.0.12077973` 与 CMake `3.22.1`（或更高兼容版本），并在 `local.properties` 中按需补充 `cmake.dir`。
 - 拥有私有仓库 `Onprs-Encryption` 的只读或维护权限。
 
 ### 2.2 挂载私有引擎联合编译
