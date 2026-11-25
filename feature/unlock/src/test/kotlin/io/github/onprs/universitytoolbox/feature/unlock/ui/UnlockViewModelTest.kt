@@ -41,11 +41,13 @@ class UnlockViewModelTest {
             LicenseState.Locked(LockReason.NOT_ACTIVATED, "DEV-CHALLENGE-01"),
         )
         override val state: StateFlow<LicenseState> = mutableState
+        var activateCallCount = 0
 
         override suspend fun getDeviceChallenge(): String = "DEV-CHALLENGE-01"
 
-        override suspend fun activate(rawKeyInput: String): Result<LicenseEntitlement> =
-            if (rawKeyInput == "VALID-KEY-123") {
+        override suspend fun activate(rawKeyInput: String): Result<LicenseEntitlement> {
+            activateCallCount += 1
+            return if (rawKeyInput == "VALID-KEY-123") {
                 val entitlement = LicenseEntitlement(
                     serialId = "SN-TEST-999",
                     tier = LicenseTier.PRO,
@@ -59,6 +61,7 @@ class UnlockViewModelTest {
             } else {
                 Result.failure(IllegalArgumentException("Invalid key"))
             }
+        }
 
         override suspend fun syncTrustedNetworkTime(serverEpochSec: Long) = Unit
 
@@ -143,6 +146,7 @@ class UnlockViewModelTest {
         assertEquals(UnlockFeedbackKind.LICENSE_CLEARED, viewModel.uiState.value.feedbackKind)
         assertTrue("LICENSE:CLEAR:SUCCESS" in metadata.actions)
 
+        viewModel.openScanner()
         viewModel.onBarcodeScanned(
             BarcodeScanResult(
                 rawValue = "BAD-KEY",
@@ -152,8 +156,59 @@ class UnlockViewModelTest {
                 sourceMode = BarcodeScannerMode.LIVE_CAMERA,
             ),
         )
+        // 扫码器关闭后的残余帧不应触发重复激活校验
+        viewModel.onBarcodeScanned(
+            BarcodeScanResult(
+                rawValue = "VALID-KEY-123",
+                displayValue = null,
+                format = BarcodeFormat.QR_CODE,
+                detectedAtEpochMs = 110L,
+                sourceMode = BarcodeScannerMode.LIVE_CAMERA,
+            ),
+        )
         advanceUntilIdle()
+        assertEquals(2, engine.activateCallCount)
+        assertTrue(viewModel.uiState.value.hasActivationError)
         assertEquals(UnlockFeedbackKind.ACTIVATION_FAILED_INVALID, viewModel.uiState.value.feedbackKind)
         assertNull(viewModel.uiState.value.entitlement)
+    }
+
+    @Test
+    fun `paste sanitization copy feedback sequence and rebind cancel behave consistently`() = runTest {
+        val engine = FakeLicenseEngine()
+        val metadata = FakeMetadataRepository()
+        val viewModel = UnlockViewModel(engine, metadata)
+        advanceUntilIdle()
+
+        viewModel.notifyChallengeCopied()
+        val firstSeq = viewModel.uiState.value.feedbackSeq
+        assertEquals(UnlockFeedbackKind.CHALLENGE_COPIED, viewModel.uiState.value.feedbackKind)
+        viewModel.notifyChallengeCopied()
+        assertTrue(viewModel.uiState.value.feedbackSeq > firstSeq)
+
+        viewModel.applyPastedText("   ")
+        assertEquals(UnlockFeedbackKind.CLIPBOARD_EMPTY, viewModel.uiState.value.feedbackKind)
+
+        // 输入框直接粘贴含首尾空白与换行的密钥时自动清理
+        viewModel.updateKeyInput("  \nVALID-KEY-123\r\n  ")
+        assertEquals("VALID-KEY-123", viewModel.uiState.value.keyInput)
+
+        viewModel.submitActivation()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.isUnlocked)
+
+        // 已解锁管理模式下进入重绑、打开相机再取消重绑时，相机与草稿同步复位
+        viewModel.startRebindMode()
+        viewModel.openScanner()
+        viewModel.toggleTorch()
+        viewModel.updateKeyInput("TEMP-KEY")
+        assertTrue(viewModel.uiState.value.isRebinding)
+        assertTrue(viewModel.uiState.value.isScannerOpen)
+
+        viewModel.cancelRebindMode()
+        assertFalse(viewModel.uiState.value.isRebinding)
+        assertFalse(viewModel.uiState.value.isScannerOpen)
+        assertFalse(viewModel.uiState.value.torchEnabled)
+        assertEquals("", viewModel.uiState.value.keyInput)
     }
 }

@@ -2,12 +2,16 @@
 <resources>
     <string name="feature_unlock_title">License Activation</string>
     <string name="feature_unlock_manage_title">License Details</string>
+    <string name="feature_unlock_rebind_title">Update License Key</string>
     <string name="feature_unlock_back">Back</string>
     <string name="feature_unlock_device_code_label">Device Challenge Code</string>
     <string name="feature_unlock_device_code_helper">Share this device code to obtain a key bound to your device.</string>
     <string name="feature_unlock_copy_code">Copy Code</string>
+    <string name="feature_unlock_copied_short">Copied</string>
     <string name="feature_unlock_key_input_label">Activation Key</string>
     <string name="feature_unlock_key_input_hint">Paste your activation key or link here</string>
+    <string name="feature_unlock_clear_input">Clear key input</string>
+    <string name="feature_unlock_key_input_error">Verification failed. Check that the key is complete and bound to this device.</string>
     <string name="feature_unlock_paste">Paste</string>
     <string name="feature_unlock_scan_qr">Scan QR</string>
     <string name="feature_unlock_activate">Activate</string>
@@ -21,6 +25,11 @@
     <string name="feature_unlock_toggle_torch">Toggle Flash</string>
     <string name="feature_unlock_camera_perm_title">Camera Permission Needed</string>
     <string name="feature_unlock_camera_perm_desc">Grant camera permission to scan an activation QR code.</string>
+    <string name="feature_unlock_badge_not_activated">Inactive</string>
+    <string name="feature_unlock_badge_expired">Expired</string>
+    <string name="feature_unlock_badge_clock_rollback">Clock Issue</string>
+    <string name="feature_unlock_badge_revoked">Revoked</string>
+    <string name="feature_unlock_badge_invalid_signature">Invalid Key</string>
     <string name="feature_unlock_reason_not_activated">Enter an activation key or scan a license QR code to continue.</string>
     <string name="feature_unlock_reason_expired">Your license has expired. Activate a valid key to restore access.</string>
     <string name="feature_unlock_reason_clock_rollback">Device clock anomaly detected. Synchronize your system time and try again.</string>
@@ -32,6 +41,7 @@
     <string name="feature_unlock_detail_scopes">Granted Scopes</string>
     <string name="feature_unlock_scope_all">All Features</string>
     <string name="feature_unlock_feedback_copied">Device code copied</string>
+    <string name="feature_unlock_feedback_clipboard_empty">Clipboard is empty</string>
     <string name="feature_unlock_feedback_activated">License activated successfully</string>
     <string name="feature_unlock_feedback_empty">Please enter an activation key</string>
     <string name="feature_unlock_feedback_invalid">Unable to activate with this key</string>

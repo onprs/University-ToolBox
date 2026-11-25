@@ -92,7 +92,7 @@ class UnlockViewModel @Inject constructor(
                 it.copy(
                     keyInput = extracted,
                     isRebinding = it.isUnlocked,
-                    errorDetail = null,
+                    hasActivationError = false,
                 )
             }
             submitActivation()
@@ -100,23 +100,35 @@ class UnlockViewModel @Inject constructor(
     }
 
     fun updateKeyInput(value: String) {
-        mutableUiState.update { it.copy(keyInput = value, errorDetail = null) }
+        mutableUiState.update { current ->
+            val cleaned = sanitizeTypedOrPastedInput(previous = current.keyInput, incoming = value)
+            current.copy(keyInput = cleaned, hasActivationError = false)
+        }
     }
 
     fun applyPastedText(clipboardText: String?) {
         val extracted = UnlockDeepLinkParser.extractActivationCode(clipboardText)
         val nextValue = extracted ?: clipboardText?.trim().orEmpty()
         if (nextValue.isNotEmpty()) {
-            mutableUiState.update { it.copy(keyInput = nextValue, errorDetail = null) }
+            mutableUiState.update {
+                it.copy(
+                    keyInput = nextValue,
+                    isScannerOpen = false,
+                    torchEnabled = false,
+                    hasActivationError = false,
+                )
+            }
+        } else {
+            emitFeedback(UnlockFeedbackKind.CLIPBOARD_EMPTY)
         }
     }
 
     fun notifyChallengeCopied() {
-        mutableUiState.update { it.copy(feedbackKind = UnlockFeedbackKind.CHALLENGE_COPIED) }
+        emitFeedback(UnlockFeedbackKind.CHALLENGE_COPIED)
     }
 
     fun openScanner() {
-        mutableUiState.update { it.copy(isScannerOpen = true, errorDetail = null) }
+        mutableUiState.update { it.copy(isScannerOpen = true, hasActivationError = false) }
     }
 
     fun closeScanner() {
@@ -128,6 +140,9 @@ class UnlockViewModel @Inject constructor(
     }
 
     fun onBarcodeScanned(result: BarcodeScanResult) {
+        if (!mutableUiState.value.isScannerOpen || mutableUiState.value.isSubmitting) {
+            return
+        }
         val extracted = UnlockDeepLinkParser.extractActivationCode(result.rawValue)
         if (extracted.isNullOrEmpty()) {
             mutableUiState.update {
@@ -135,6 +150,7 @@ class UnlockViewModel @Inject constructor(
                     isScannerOpen = false,
                     torchEnabled = false,
                     feedbackKind = UnlockFeedbackKind.SCAN_FAILED,
+                    feedbackSeq = it.feedbackSeq + 1,
                 )
             }
             return
@@ -144,7 +160,7 @@ class UnlockViewModel @Inject constructor(
                 isScannerOpen = false,
                 torchEnabled = false,
                 keyInput = extracted,
-                errorDetail = null,
+                hasActivationError = false,
             )
         }
         submitActivation()
@@ -152,7 +168,7 @@ class UnlockViewModel @Inject constructor(
 
     fun startRebindMode() {
         refreshDeviceChallengeIfEmpty()
-        mutableUiState.update { it.copy(isRebinding = true, errorDetail = null) }
+        mutableUiState.update { it.copy(isRebinding = true, hasActivationError = false) }
     }
 
     fun cancelRebindMode() {
@@ -162,22 +178,30 @@ class UnlockViewModel @Inject constructor(
                 isScannerOpen = false,
                 torchEnabled = false,
                 keyInput = "",
-                errorDetail = null,
+                hasActivationError = false,
             )
         }
     }
 
     fun submitActivation() {
+        if (mutableUiState.value.isSubmitting) {
+            return
+        }
         val candidate = UnlockDeepLinkParser.extractActivationCode(mutableUiState.value.keyInput)
         if (candidate.isNullOrEmpty()) {
-            mutableUiState.update {
-                it.copy(feedbackKind = UnlockFeedbackKind.ACTIVATION_FAILED_EMPTY)
-            }
+            emitFeedback(UnlockFeedbackKind.ACTIVATION_FAILED_EMPTY)
             return
         }
 
         viewModelScope.launch {
-            mutableUiState.update { it.copy(isSubmitting = true, errorDetail = null) }
+            mutableUiState.update {
+                it.copy(
+                    isSubmitting = true,
+                    isScannerOpen = false,
+                    torchEnabled = false,
+                    hasActivationError = false,
+                )
+            }
             val result = licenseEngine.activate(candidate)
             result.fold(
                 onSuccess = { entitlement ->
@@ -188,8 +212,9 @@ class UnlockViewModel @Inject constructor(
                             isRebinding = false,
                             entitlement = entitlement,
                             lockReason = null,
+                            hasActivationError = false,
                             feedbackKind = UnlockFeedbackKind.ACTIVATION_SUCCEEDED,
-                            errorDetail = null,
+                            feedbackSeq = it.feedbackSeq + 1,
                         )
                     }
                     metadataRepository.logAuditEvent(
@@ -199,12 +224,13 @@ class UnlockViewModel @Inject constructor(
                         summary = "License activated (${entitlement.tier.name}, ${entitlement.serialId})",
                     )
                 },
-                onFailure = { throwable ->
+                onFailure = {
                     mutableUiState.update {
                         it.copy(
                             isSubmitting = false,
+                            hasActivationError = true,
                             feedbackKind = UnlockFeedbackKind.ACTIVATION_FAILED_INVALID,
-                            errorDetail = throwable.message,
+                            feedbackSeq = it.feedbackSeq + 1,
                         )
                     }
                     metadataRepository.logAuditEvent(
@@ -227,6 +253,9 @@ class UnlockViewModel @Inject constructor(
     }
 
     fun confirmClearLicense() {
+        if (mutableUiState.value.isClearing) {
+            return
+        }
         viewModelScope.launch {
             mutableUiState.update { it.copy(isClearing = true, isClearConfirmOpen = false) }
             licenseEngine.clearLicense()
@@ -240,8 +269,12 @@ class UnlockViewModel @Inject constructor(
                 it.copy(
                     isClearing = false,
                     isRebinding = false,
+                    isScannerOpen = false,
+                    torchEnabled = false,
                     keyInput = "",
+                    hasActivationError = false,
                     feedbackKind = UnlockFeedbackKind.LICENSE_CLEARED,
+                    feedbackSeq = it.feedbackSeq + 1,
                 )
             }
         }
@@ -249,5 +282,15 @@ class UnlockViewModel @Inject constructor(
 
     fun consumeFeedback() {
         mutableUiState.update { it.copy(feedbackKind = null) }
+    }
+
+    private fun emitFeedback(kind: UnlockFeedbackKind) {
+        mutableUiState.update { it.copy(feedbackKind = kind, feedbackSeq = it.feedbackSeq + 1) }
+    }
+
+    private fun sanitizeTypedOrPastedInput(previous: String, incoming: String): String {
+        val withoutLineBreaks = incoming.replace("\r", "").replace("\n", "").replace("\t", "")
+        val isBulkPaste = incoming.length - previous.length > 1 || incoming.contains('\n') || incoming.contains('\r')
+        return if (isBulkPaste) withoutLineBreaks.trim() else withoutLineBreaks
     }
 }

@@ -1,5 +1,6 @@
 package io.github.onprs.universitytoolbox.feature.qrcodestudio.impl.ui
 
+import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -35,6 +36,7 @@ data class QrCodeStudioUiState(
     val isScannerOpen: Boolean = false,
     val torchEnabled: Boolean = false,
     val isDecodingImage: Boolean = false,
+    val isClearHistoryConfirmOpen: Boolean = false,
     val manualInput: String = "",
     val selectedPayload: InspectedBarcodePayload? = null,
     val history: List<InspectedBarcodePayload> = emptyList(),
@@ -70,42 +72,101 @@ class QrCodeStudioViewModel @Inject constructor(
         mutableUiState.update { it.copy(manualInput = value, noticeMessage = null) }
     }
 
+    fun applyPastedManualInput(clipboardText: String?) {
+        val trimmed = clipboardText?.trim().orEmpty()
+        if (trimmed.isNotEmpty()) {
+            mutableUiState.update { it.copy(manualInput = trimmed, noticeMessage = null) }
+        }
+    }
+
     fun inspectManualInput() {
         val raw = mutableUiState.value.manualInput
         if (raw.isBlank()) {
             return
         }
-        recordInspection(rawContent = raw, formatLabel = DEFAULT_MANUAL_FORMAT)
-        mutableUiState.update { it.copy(manualInput = "") }
+        recordInspection(
+            rawContent = raw,
+            formatLabel = DEFAULT_MANUAL_FORMAT,
+            closeLiveScanner = true,
+            clearManualInput = true,
+        )
     }
 
     fun onLiveBarcodeDetected(result: BarcodeScanResult) {
-        recordInspection(rawContent = result.rawValue, formatLabel = result.format.name)
-        mutableUiState.update { it.copy(isScannerOpen = false, torchEnabled = false) }
+        if (!mutableUiState.value.isScannerOpen) {
+            return
+        }
+        recordInspection(
+            rawContent = result.rawValue,
+            formatLabel = result.format.name,
+            closeLiveScanner = true,
+            clearManualInput = false,
+        )
     }
 
     fun scanImageUri(uri: Uri) {
+        if (mutableUiState.value.isDecodingImage) {
+            return
+        }
         viewModelScope.launch {
-            mutableUiState.update { it.copy(isDecodingImage = true, noticeMessage = null) }
-            when (val result = barcodeScanner.scanImageUri(uri)) {
-                is AppResult.Success -> {
-                    val first = result.data.firstOrNull()
-                    if (first != null) {
-                        recordInspection(rawContent = first.rawValue, formatLabel = first.format.name)
-                    } else {
-                        mutableUiState.update { it.copy(noticeMessage = StudioNoticeMessage.NO_BARCODE_IN_IMAGE) }
+            mutableUiState.update {
+                it.copy(
+                    isDecodingImage = true,
+                    isScannerOpen = false,
+                    torchEnabled = false,
+                    noticeMessage = null,
+                )
+            }
+            handleStaticScanResult(barcodeScanner.scanImageUri(uri))
+            mutableUiState.update { it.copy(isDecodingImage = false) }
+        }
+    }
+
+    fun scanPickedImage(decodeBitmap: suspend () -> Bitmap?) {
+        if (mutableUiState.value.isDecodingImage) {
+            return
+        }
+        viewModelScope.launch {
+            mutableUiState.update {
+                it.copy(
+                    isDecodingImage = true,
+                    isScannerOpen = false,
+                    torchEnabled = false,
+                    noticeMessage = null,
+                )
+            }
+            val bitmap = decodeBitmap()
+            if (bitmap == null) {
+                mutableUiState.update {
+                    it.copy(
+                        isDecodingImage = false,
+                        noticeMessage = StudioNoticeMessage.IMAGE_SCAN_FAILED,
+                    )
+                }
+                return@launch
+            }
+            val scanResult = try {
+                barcodeScanner.scanBitmap(bitmap)
+            } finally {
+                runCatching {
+                    if (!bitmap.isRecycled) {
+                        bitmap.recycle()
                     }
                 }
-                is AppResult.Failure -> {
-                    mutableUiState.update { it.copy(noticeMessage = StudioNoticeMessage.IMAGE_SCAN_FAILED) }
-                }
             }
+            handleStaticScanResult(scanResult)
             mutableUiState.update { it.copy(isDecodingImage = false) }
         }
     }
 
     fun selectHistoryItem(payload: InspectedBarcodePayload) {
-        mutableUiState.update { it.copy(selectedPayload = payload, revealedFieldIds = emptySet()) }
+        mutableUiState.update { current ->
+            if (current.selectedPayload?.id == payload.id) {
+                current
+            } else {
+                current.copy(selectedPayload = payload, revealedFieldIds = emptySet())
+            }
+        }
     }
 
     fun toggleFieldVisibility(fieldId: String) {
@@ -119,12 +180,34 @@ class QrCodeStudioViewModel @Inject constructor(
         }
     }
 
+    fun removeHistoryItem(id: String) {
+        mutableUiState.update { current ->
+            val nextHistory = current.history.filterNot { it.id == id }
+            val wasSelected = current.selectedPayload?.id == id
+            current.copy(
+                history = nextHistory,
+                selectedPayload = if (wasSelected) nextHistory.firstOrNull() else current.selectedPayload,
+                revealedFieldIds = if (wasSelected) emptySet() else current.revealedFieldIds,
+                isClearHistoryConfirmOpen = current.isClearHistoryConfirmOpen && nextHistory.isNotEmpty(),
+            )
+        }
+    }
+
+    fun setClearHistoryConfirmOpen(open: Boolean) {
+        mutableUiState.update { it.copy(isClearHistoryConfirmOpen = open && it.history.isNotEmpty()) }
+    }
+
+    fun confirmClearHistory() {
+        clearHistory()
+    }
+
     fun clearHistory() {
         mutableUiState.update {
             it.copy(
                 selectedPayload = null,
                 history = emptyList(),
                 revealedFieldIds = emptySet(),
+                isClearHistoryConfirmOpen = false,
             )
         }
     }
@@ -133,7 +216,33 @@ class QrCodeStudioViewModel @Inject constructor(
         mutableUiState.update { it.copy(noticeMessage = null) }
     }
 
-    private fun recordInspection(rawContent: String, formatLabel: String) {
+    private fun handleStaticScanResult(result: AppResult<List<BarcodeScanResult>>) {
+        when (result) {
+            is AppResult.Success -> {
+                val first = result.data.firstOrNull()
+                if (first != null) {
+                    recordInspection(
+                        rawContent = first.rawValue,
+                        formatLabel = first.format.name,
+                        closeLiveScanner = false,
+                        clearManualInput = false,
+                    )
+                } else {
+                    mutableUiState.update { it.copy(noticeMessage = StudioNoticeMessage.NO_BARCODE_IN_IMAGE) }
+                }
+            }
+            is AppResult.Failure -> {
+                mutableUiState.update { it.copy(noticeMessage = StudioNoticeMessage.IMAGE_SCAN_FAILED) }
+            }
+        }
+    }
+
+    private fun recordInspection(
+        rawContent: String,
+        formatLabel: String,
+        closeLiveScanner: Boolean,
+        clearManualInput: Boolean,
+    ) {
         val nowMs = timeProvider.currentTimeMillis()
         val payload = QrContentInspector.inspect(
             rawContent = rawContent,
@@ -141,17 +250,28 @@ class QrCodeStudioViewModel @Inject constructor(
             id = UUID.randomUUID().toString(),
             scannedAtEpochMs = nowMs,
         )
+        var accepted = false
         mutableUiState.update { current ->
+            if (closeLiveScanner && !clearManualInput && !current.isScannerOpen) {
+                return@update current
+            }
+            accepted = true
             val deduplicated = current.history.filterNot {
                 it.rawContent == payload.rawContent && it.formatLabel == payload.formatLabel
             }
             val nextHistory = (listOf(payload) + deduplicated).take(MAX_HISTORY_ITEMS)
             current.copy(
+                isScannerOpen = if (closeLiveScanner) false else current.isScannerOpen,
+                torchEnabled = if (closeLiveScanner) false else current.torchEnabled,
+                manualInput = if (clearManualInput) "" else current.manualInput,
                 selectedPayload = payload,
                 history = nextHistory,
                 revealedFieldIds = emptySet(),
                 noticeMessage = null,
             )
+        }
+        if (!accepted) {
+            return
         }
         viewModelScope.launch {
             metadataRepository.recordToolUsage(QR_CODE_STUDIO_TOOL_ID)

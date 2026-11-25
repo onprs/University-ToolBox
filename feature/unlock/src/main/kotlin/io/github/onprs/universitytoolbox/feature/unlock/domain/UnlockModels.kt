@@ -8,6 +8,7 @@ import io.github.onprs.universitytoolbox.core.license.api.LockReason
  */
 enum class UnlockFeedbackKind {
     CHALLENGE_COPIED,
+    CLIPBOARD_EMPTY,
     ACTIVATION_SUCCEEDED,
     ACTIVATION_FAILED_EMPTY,
     ACTIVATION_FAILED_INVALID,
@@ -27,12 +28,13 @@ data class UnlockUiState(
     val torchEnabled: Boolean = false,
     val isRebinding: Boolean = false,
     val isClearConfirmOpen: Boolean = false,
+    val hasActivationError: Boolean = false,
     val deviceChallenge: String = "",
     val keyInput: String = "",
     val lockReason: LockReason? = null,
     val entitlement: LicenseEntitlement? = null,
     val feedbackKind: UnlockFeedbackKind? = null,
-    val errorDetail: String? = null,
+    val feedbackSeq: Long = 0L,
     val manageMode: Boolean = false,
 ) {
     val isUnlocked: Boolean

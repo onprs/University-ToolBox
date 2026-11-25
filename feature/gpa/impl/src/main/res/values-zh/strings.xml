@@ -23,6 +23,20 @@
     <string name="feature_gpa_save">保存</string>
     <string name="feature_gpa_cancel">取消</string>
     <string name="feature_gpa_delete">删除</string>
+    <string name="feature_gpa_clear_all">清空课程</string>
+    <string name="feature_gpa_delete_confirm_title">确认删除该课程？</string>
+    <string name="feature_gpa_delete_confirm_message">即将从当前列表中移除“%1$s”。</string>
+    <string name="feature_gpa_clear_confirm_title">确认清空全部课程？</string>
+    <string name="feature_gpa_clear_confirm_message">清空后将移除当前列表中的全部课程记录。</string>
+    <string name="feature_gpa_confirm_clear">确认清空</string>
+    <string name="feature_gpa_error_name_blank">请输入课程名称</string>
+    <string name="feature_gpa_error_number_invalid">请输入有效的数字</string>
+    <string name="feature_gpa_error_credits_range">请输入大于 0 且不超过 %1$s 的学分</string>
+    <string name="feature_gpa_error_score_range">请输入 0 至 100 之间的百分制成绩</string>
+    <string name="feature_gpa_error_credits_negative">学分需大于或等于 0</string>
+    <string name="feature_gpa_error_total_credits_max">请输入不超过 %1$s 的学分数值</string>
+    <string name="feature_gpa_error_planned_zero">后续计划学分需大于 0</string>
+    <string name="feature_gpa_error_gpa_range">请输入 0 至 %1$s 之间的绩点数值</string>
     <string name="feature_gpa_empty_title">暂未添加课程</string>
     <string name="feature_gpa_empty_desc">点击右下角“添加课程”开始计算加权平均分与 GPA。</string>
     <string name="feature_gpa_load_sample">填入参考课程</string>
@@ -35,11 +49,15 @@
     <string name="feature_gpa_target_current_gpa">当前 GPA</string>
     <string name="feature_gpa_target_planned_credits">后续计划学分</string>
     <string name="feature_gpa_target_goal_gpa">目标总 GPA</string>
+    <string name="feature_gpa_target_guide_hint">填写已修学分与当前 GPA（或点击上方“从课程同步”），即可反推后续课程所需平均绩点与均分。</string>
     <string name="feature_gpa_target_status_secured">当前累积绩点已稳保目标达成。</string>
     <string name="feature_gpa_target_status_achievable">后续需保持平均 GPA %1$s（约合百分制均分 %2$s 分）</string>
     <string name="feature_gpa_target_status_exact_max">后续所有计划学分均需取得满分绩点（%1$s）。</string>
     <string name="feature_gpa_target_status_unreachable">按计划学分无法达成目标，最高可达总 GPA 为 %1$s。</string>
-    <string name="feature_gpa_target_status_invalid">请输入有效的非负学分以及当前算法范围内的 GPA。</string>
+    <string name="feature_gpa_target_status_exceeds_scale">目标总 GPA 超出当前算法满绩点（%1$s），理论最高可达总 GPA 为 %2$s。</string>
+    <string name="feature_gpa_target_status_zero_planned_met">后续计划学分为 0，当前总 GPA（%1$s）已达到目标绩点。</string>
+    <string name="feature_gpa_target_status_zero_planned_unmet">后续计划学分为 0 时总 GPA 将保持为 %1$s，请填写大于 0 的后续计划学分。</string>
+    <string name="feature_gpa_target_status_invalid">请检查上方标红项，输入有效范围内的学分与绩点。</string>
     <string name="feature_gpa_target_max_possible">理论最高可达 GPA：%1$s</string>
     <string name="feature_gpa_back">返回</string>
 </resources>

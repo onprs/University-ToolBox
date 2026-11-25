@@ -2,12 +2,16 @@
 <resources>
     <string name="feature_unlock_title">授权激活</string>
     <string name="feature_unlock_manage_title">授权详情与管理</string>
+    <string name="feature_unlock_rebind_title">更换授权密钥</string>
     <string name="feature_unlock_back">返回</string>
     <string name="feature_unlock_device_code_label">本机设备特征码</string>
     <string name="feature_unlock_device_code_helper">复制此设备特征码后即可申请绑定当前设备的激活密钥。</string>
     <string name="feature_unlock_copy_code">复制</string>
+    <string name="feature_unlock_copied_short">已复制</string>
     <string name="feature_unlock_key_input_label">激活密钥</string>
     <string name="feature_unlock_key_input_hint">请粘贴激活密钥文本或激活链接</string>
+    <string name="feature_unlock_clear_input">清空密钥输入</string>
+    <string name="feature_unlock_key_input_error">密钥校验未通过，请确认密钥内容完整且与本机设备特征码匹配。</string>
     <string name="feature_unlock_paste">粘贴</string>
     <string name="feature_unlock_scan_qr">扫码激活</string>
     <string name="feature_unlock_activate">立即激活</string>
@@ -21,6 +25,11 @@
     <string name="feature_unlock_toggle_torch">开关手电筒</string>
     <string name="feature_unlock_camera_perm_title">需要相机权限</string>
     <string name="feature_unlock_camera_perm_desc">开启相机权限后即可直接扫描授权二维码完成激活。</string>
+    <string name="feature_unlock_badge_not_activated">待激活</string>
+    <string name="feature_unlock_badge_expired">已过期</string>
+    <string name="feature_unlock_badge_clock_rollback">时间异常</string>
+    <string name="feature_unlock_badge_revoked">已失效</string>
+    <string name="feature_unlock_badge_invalid_signature">校验未通过</string>
     <string name="feature_unlock_reason_not_activated">请输入激活密钥或扫描激活二维码解锁工具箱功能。</string>
     <string name="feature_unlock_reason_expired">当前授权已过期，请输入新的有效激活密钥续期。</string>
     <string name="feature_unlock_reason_clock_rollback">检测到系统时间回拨异常，请校准设备时间或联网同步后重试。</string>
@@ -32,6 +41,7 @@
     <string name="feature_unlock_detail_scopes">授权范围</string>
     <string name="feature_unlock_scope_all">全功能通用授权</string>
     <string name="feature_unlock_feedback_copied">设备特征码已复制</string>
+    <string name="feature_unlock_feedback_clipboard_empty">剪贴板暂无可用内容</string>
     <string name="feature_unlock_feedback_activated">激活成功</string>
     <string name="feature_unlock_feedback_empty">请先输入激活密钥</string>
     <string name="feature_unlock_feedback_invalid">激活失败，请核对密钥内容与设备匹配状态</string>

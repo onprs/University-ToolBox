@@ -23,6 +23,20 @@
     <string name="feature_gpa_save">Save</string>
     <string name="feature_gpa_cancel">Cancel</string>
     <string name="feature_gpa_delete">Delete</string>
+    <string name="feature_gpa_clear_all">Clear Courses</string>
+    <string name="feature_gpa_delete_confirm_title">Remove Course?</string>
+    <string name="feature_gpa_delete_confirm_message">Remove \"%1$s\" from the current course list?</string>
+    <string name="feature_gpa_clear_confirm_title">Clear All Courses?</string>
+    <string name="feature_gpa_clear_confirm_message">All courses in the current list will be removed.</string>
+    <string name="feature_gpa_confirm_clear">Clear All</string>
+    <string name="feature_gpa_error_name_blank">Enter a course name</string>
+    <string name="feature_gpa_error_number_invalid">Enter a valid number</string>
+    <string name="feature_gpa_error_credits_range">Enter credits greater than 0 and up to %1$s</string>
+    <string name="feature_gpa_error_score_range">Enter a score between 0 and 100</string>
+    <string name="feature_gpa_error_credits_negative">Credits must be 0 or greater</string>
+    <string name="feature_gpa_error_total_credits_max">Enter credits up to %1$s</string>
+    <string name="feature_gpa_error_planned_zero">Enter planned credits greater than 0</string>
+    <string name="feature_gpa_error_gpa_range">Enter a GPA between 0 and %1$s for this scale</string>
     <string name="feature_gpa_empty_title">No courses added</string>
     <string name="feature_gpa_empty_desc">Tap Add Course to calculate your weighted average and GPA.</string>
     <string name="feature_gpa_load_sample">Fill Sample Courses</string>
@@ -35,11 +49,15 @@
     <string name="feature_gpa_target_current_gpa">Current GPA</string>
     <string name="feature_gpa_target_planned_credits">Planned Credits</string>
     <string name="feature_gpa_target_goal_gpa">Target GPA</string>
+    <string name="feature_gpa_target_guide_hint">Enter your completed credits and current GPA (or sync from Courses) to estimate required future scores.</string>
     <string name="feature_gpa_target_status_secured">Target already secured even with minimum passing effort.</string>
     <string name="feature_gpa_target_status_achievable">Required future GPA: %1$s (minimum average score ~%2$s)</string>
     <string name="feature_gpa_target_status_exact_max">Requires full scale GPA (%1$s) across all planned credits.</string>
     <string name="feature_gpa_target_status_unreachable">Unreachable with planned credits. Max possible GPA is %1$s.</string>
-    <string name="feature_gpa_target_status_invalid">Enter valid non-negative credits and GPA within the selected scale.</string>
+    <string name="feature_gpa_target_status_exceeds_scale">Target exceeds the maximum GPA (%1$s) of the selected scale. Max possible GPA is %2$s.</string>
+    <string name="feature_gpa_target_status_zero_planned_met">Planned credits are 0. Your current GPA (%1$s) already meets the target.</string>
+    <string name="feature_gpa_target_status_zero_planned_unmet">Planned credits must be greater than 0 to raise your GPA above %1$s.</string>
+    <string name="feature_gpa_target_status_invalid">Check the highlighted fields above and enter valid credits and GPA values.</string>
     <string name="feature_gpa_target_max_possible">Max Achievable GPA: %1$s</string>
     <string name="feature_gpa_back">Back</string>
 </resources>

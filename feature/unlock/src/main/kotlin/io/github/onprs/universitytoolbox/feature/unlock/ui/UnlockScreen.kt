@@ -1,13 +1,16 @@
 package io.github.onprs.universitytoolbox.feature.unlock.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,15 +19,25 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.exclude
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentPaste
@@ -40,6 +53,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,18 +69,27 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxLoadingIndicator
 import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxStatusBadge
@@ -88,6 +111,9 @@ import io.github.onprs.universitytoolbox.feature.unlock.domain.UnlockUiState
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
+
+private const val COPIED_BADGE_DURATION_MS = 2_000L
 
 /**
  * 授权激活引导与授权管理主路由。
@@ -105,20 +131,13 @@ fun UnlockRoute(
     val context = LocalContext.current
     val backDispatcher = LocalOnBackPressedDispatcherOwner.current?.onBackPressedDispatcher
     val snackbarHostState = remember { SnackbarHostState() }
+    val permissionState = rememberUnlockCameraPermissionState(onOpenScanner = viewModel::openScanner)
+    var copiedMarkerSeq by remember { mutableLongStateOf(0L) }
 
-    var hasCameraPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                PackageManager.PERMISSION_GRANTED,
-        )
-    }
-
-    val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        hasCameraPermission = granted
-        if (granted) {
-            viewModel.openScanner()
+    LaunchedEffect(copiedMarkerSeq) {
+        if (copiedMarkerSeq > 0L) {
+            delay(COPIED_BADGE_DURATION_MS)
+            copiedMarkerSeq = 0L
         }
     }
 
@@ -126,30 +145,22 @@ fun UnlockRoute(
         viewModel.applyRouteArguments(initialActivationCode, manageMode)
     }
 
-    val feedbackMessage = feedbackText(uiState.feedbackKind)
-    LaunchedEffect(uiState.feedbackKind) {
-        val kind = uiState.feedbackKind ?: return@LaunchedEffect
-        if (feedbackMessage != null) {
-            snackbarHostState.showSnackbar(feedbackMessage)
-        }
-        if (kind == UnlockFeedbackKind.ACTIVATION_SUCCEEDED) {
-            onActivated?.invoke()
-        }
-        viewModel.consumeFeedback()
-    }
+    ObserveUnlockFeedback(
+        uiState = uiState,
+        snackbarHostState = snackbarHostState,
+        onChallengeCopied = { copiedMarkerSeq = uiState.feedbackSeq.coerceAtLeast(1L) },
+        onActivated = onActivated,
+        onConsumeFeedback = viewModel::consumeFeedback,
+    )
 
     UnlockScreen(
         uiState = uiState,
-        hasCameraPermission = hasCameraPermission,
+        hasCameraPermission = permissionState.hasPermission,
+        isPermanentlyDenied = permissionState.isPermanentlyDenied,
+        isChallengeCopiedRecently = copiedMarkerSeq > 0L,
         snackbarHostState = snackbarHostState,
-        showBackNavigation = uiState.manageMode || onBack != null,
-        onBackClick = {
-            if (onBack != null) {
-                onBack()
-            } else {
-                backDispatcher?.onBackPressed()
-            }
-        },
+        canPopPage = (manageMode && uiState.isUnlocked) || onBack != null,
+        onPageBackClick = { onBack?.invoke() ?: backDispatcher?.onBackPressed() },
         onCopyChallenge = {
             if (uiState.deviceChallenge.isNotEmpty()) {
                 copyText(context, "DeviceCode", uiState.deviceChallenge)
@@ -158,17 +169,11 @@ fun UnlockRoute(
         },
         onKeyInputChange = viewModel::updateKeyInput,
         onPasteClick = { viewModel.applyPastedText(readClipboardText(context)) },
-        onScanClick = {
-            if (hasCameraPermission) {
-                viewModel.openScanner()
-            } else {
-                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-            }
-        },
+        onScanClick = permissionState.onScanClick,
+        onPermissionActionClick = permissionState.onPermissionGuideAction,
         onCloseScanner = viewModel::closeScanner,
         onToggleTorch = viewModel::toggleTorch,
         onBarcodeScanned = viewModel::onBarcodeScanned,
-        onOpenAppSettings = { openAppSettings(context) },
         onActivateClick = viewModel::submitActivation,
         onStartRebind = viewModel::startRebindMode,
         onCancelRebind = viewModel::cancelRebindMode,
@@ -179,28 +184,189 @@ fun UnlockRoute(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+private data class UnlockCameraPermissionState(
+    val hasPermission: Boolean,
+    val isPermanentlyDenied: Boolean,
+    val onScanClick: () -> Unit,
+    val onPermissionGuideAction: () -> Unit,
+)
+
+@Composable
+private fun rememberUnlockCameraPermissionState(onOpenScanner: () -> Unit): UnlockCameraPermissionState {
+    val context = LocalContext.current
+    var hasCameraPermission by remember { mutableStateOf(checkCameraGranted(context)) }
+    var hasRequestedPermission by rememberSaveable { mutableStateOf(false) }
+
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        hasCameraPermission = checkCameraGranted(context)
+    }
+
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        hasCameraPermission = granted
+        hasRequestedPermission = true
+        onOpenScanner()
+    }
+
+    val isPermanentlyDenied = !hasCameraPermission &&
+        hasRequestedPermission &&
+        !shouldShowCameraRationale(context)
+
+    return UnlockCameraPermissionState(
+        hasPermission = hasCameraPermission,
+        isPermanentlyDenied = isPermanentlyDenied,
+        onScanClick = {
+            if (hasCameraPermission) onOpenScanner() else launcher.launch(Manifest.permission.CAMERA)
+        },
+        onPermissionGuideAction = {
+            if (isPermanentlyDenied) openAppSettings(context) else launcher.launch(Manifest.permission.CAMERA)
+        },
+    )
+}
+
+@Composable
+private fun ObserveUnlockFeedback(
+    uiState: UnlockUiState,
+    snackbarHostState: SnackbarHostState,
+    onChallengeCopied: () -> Unit,
+    onActivated: (() -> Unit)?,
+    onConsumeFeedback: () -> Unit,
+) {
+    val message = feedbackTextRes(uiState.feedbackKind)?.let { stringResource(it) }
+    LaunchedEffect(uiState.feedbackSeq, uiState.feedbackKind) {
+        val kind = uiState.feedbackKind ?: return@LaunchedEffect
+        val resolvedMessage = message
+        onConsumeFeedback()
+        if (kind == UnlockFeedbackKind.CHALLENGE_COPIED) {
+            onChallengeCopied()
+        }
+        if (kind == UnlockFeedbackKind.ACTIVATION_SUCCEEDED) {
+            onActivated?.invoke()
+        }
+        if (resolvedMessage != null) {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarHostState.showSnackbar(resolvedMessage)
+        }
+    }
+}
+
 @Composable
 internal fun UnlockScreen(
     uiState: UnlockUiState,
     hasCameraPermission: Boolean,
+    isPermanentlyDenied: Boolean,
+    isChallengeCopiedRecently: Boolean,
     snackbarHostState: SnackbarHostState,
-    showBackNavigation: Boolean,
-    onBackClick: () -> Unit,
+    canPopPage: Boolean,
+    onPageBackClick: () -> Unit,
     onCopyChallenge: () -> Unit,
     onKeyInputChange: (String) -> Unit,
     onPasteClick: () -> Unit,
     onScanClick: () -> Unit,
+    onPermissionActionClick: () -> Unit,
     onCloseScanner: () -> Unit,
     onToggleTorch: () -> Unit,
     onBarcodeScanned: (BarcodeScanResult) -> Unit,
-    onOpenAppSettings: () -> Unit,
     onActivateClick: () -> Unit,
     onStartRebind: () -> Unit,
     onCancelRebind: () -> Unit,
     onRequestClear: () -> Unit,
     onDismissClearConfirm: () -> Unit,
     onConfirmClear: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val interceptSubStateBack = uiState.isScannerOpen || (uiState.isUnlocked && uiState.isRebinding)
+    BackHandler(enabled = interceptSubStateBack) {
+        if (uiState.isScannerOpen) {
+            onCloseScanner()
+        } else {
+            onCancelRebind()
+        }
+    }
+
+    val showBackNavigation = interceptSubStateBack || canPopPage
+    val handleTopBack = {
+        when {
+            uiState.isScannerOpen -> onCloseScanner()
+            uiState.isUnlocked && uiState.isRebinding -> onCancelRebind()
+            else -> onPageBackClick()
+        }
+    }
+
+    Scaffold(
+        modifier = modifier,
+        snackbarHost = {
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier.windowInsetsPadding(WindowInsets.ime.exclude(WindowInsets.navigationBars)),
+            )
+        },
+        topBar = {
+            UnlockTopBar(
+                isUnlocked = uiState.isUnlocked,
+                isRebinding = uiState.isRebinding,
+                showBackNavigation = showBackNavigation,
+                onBackClick = handleTopBack,
+            )
+        },
+    ) { innerPadding ->
+        if (uiState.isInitializing) {
+            LoadingStateView(modifier = Modifier.padding(innerPadding))
+            return@Scaffold
+        }
+
+        UnlockBodyContent(
+            uiState = uiState,
+            hasCameraPermission = hasCameraPermission,
+            isPermanentlyDenied = isPermanentlyDenied,
+            isChallengeCopiedRecently = isChallengeCopiedRecently,
+            onCopyChallenge = onCopyChallenge,
+            onKeyInputChange = onKeyInputChange,
+            onPasteClick = onPasteClick,
+            onScanClick = onScanClick,
+            onPermissionActionClick = onPermissionActionClick,
+            onCloseScanner = onCloseScanner,
+            onToggleTorch = onToggleTorch,
+            onBarcodeScanned = onBarcodeScanned,
+            onActivateClick = onActivateClick,
+            onStartRebind = onStartRebind,
+            onCancelRebind = onCancelRebind,
+            onRequestClear = onRequestClear,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
+                .imePadding(),
+        )
+    }
+
+    if (uiState.isClearConfirmOpen) {
+        ClearLicenseConfirmDialog(
+            onDismiss = onDismissClearConfirm,
+            onConfirm = onConfirmClear,
+        )
+    }
+}
+
+@Composable
+private fun UnlockBodyContent(
+    uiState: UnlockUiState,
+    hasCameraPermission: Boolean,
+    isPermanentlyDenied: Boolean,
+    isChallengeCopiedRecently: Boolean,
+    onCopyChallenge: () -> Unit,
+    onKeyInputChange: (String) -> Unit,
+    onPasteClick: () -> Unit,
+    onScanClick: () -> Unit,
+    onPermissionActionClick: () -> Unit,
+    onCloseScanner: () -> Unit,
+    onToggleTorch: () -> Unit,
+    onBarcodeScanned: (BarcodeScanResult) -> Unit,
+    onActivateClick: () -> Unit,
+    onStartRebind: () -> Unit,
+    onCancelRebind: () -> Unit,
+    onRequestClear: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val currentLicenseState = when {
@@ -212,84 +378,65 @@ internal fun UnlockScreen(
         )
     }
 
-    Scaffold(
-        modifier = modifier,
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-        topBar = {
-            UnlockTopBar(
-                isUnlocked = uiState.isUnlocked,
-                showBackNavigation = showBackNavigation,
-                onBackClick = onBackClick,
+    Column(
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(ToolboxSpacing.medium),
+        verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.medium),
+    ) {
+        DevStubBanner(licenseState = currentLicenseState)
+
+        if (uiState.entitlement != null && !uiState.isRebinding && uiState.lockReason == null) {
+            UnlockedEntitlementCard(
+                entitlement = uiState.entitlement,
+                deviceChallenge = uiState.deviceChallenge,
+                isCopiedRecently = isChallengeCopiedRecently,
+                onCopyChallenge = onCopyChallenge,
+                onStartRebind = onStartRebind,
+                onRequestClear = onRequestClear,
             )
-        },
-    ) { innerPadding ->
-        if (uiState.isInitializing) {
-            LoadingStateView(modifier = Modifier.padding(innerPadding))
-            return@Scaffold
-        }
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(ToolboxSpacing.medium),
-            verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.medium),
-        ) {
-            DevStubBanner(licenseState = currentLicenseState)
-
-            if (uiState.entitlement != null && !uiState.isRebinding && uiState.lockReason == null) {
-                UnlockedEntitlementCard(
-                    entitlement = uiState.entitlement,
-                    deviceChallenge = uiState.deviceChallenge,
-                    onCopyChallenge = onCopyChallenge,
-                    onStartRebind = onStartRebind,
-                    onRequestClear = onRequestClear,
-                )
-            } else {
-                uiState.lockReason?.let { reason ->
-                    LockReasonBannerCard(reason = reason)
-                }
-                DeviceChallengeCard(
-                    deviceChallenge = uiState.deviceChallenge,
-                    onCopyChallenge = onCopyChallenge,
-                )
-                ActivationFormCard(
-                    uiState = uiState,
-                    hasCameraPermission = hasCameraPermission,
-                    onKeyInputChange = onKeyInputChange,
-                    onPasteClick = onPasteClick,
-                    onScanClick = onScanClick,
-                    onCloseScanner = onCloseScanner,
-                    onToggleTorch = onToggleTorch,
-                    onBarcodeScanned = onBarcodeScanned,
-                    onOpenAppSettings = onOpenAppSettings,
-                    onActivateClick = onActivateClick,
-                    onCancelRebind = if (uiState.isRebinding) onCancelRebind else null,
-                )
+        } else {
+            uiState.lockReason?.let { reason ->
+                LockReasonBannerCard(reason = reason)
             }
+            DeviceChallengeCard(
+                deviceChallenge = uiState.deviceChallenge,
+                isCopiedRecently = isChallengeCopiedRecently,
+                onCopyChallenge = onCopyChallenge,
+            )
+            ActivationFormCard(
+                uiState = uiState,
+                hasCameraPermission = hasCameraPermission,
+                isPermanentlyDenied = isPermanentlyDenied,
+                onKeyInputChange = onKeyInputChange,
+                onPasteClick = onPasteClick,
+                onScanClick = onScanClick,
+                onPermissionActionClick = onPermissionActionClick,
+                onCloseScanner = onCloseScanner,
+                onToggleTorch = onToggleTorch,
+                onBarcodeScanned = onBarcodeScanned,
+                onActivateClick = onActivateClick,
+                onCancelRebind = if (uiState.isRebinding) onCancelRebind else null,
+            )
         }
-    }
-
-    if (uiState.isClearConfirmOpen) {
-        ClearLicenseConfirmDialog(
-            onDismiss = onDismissClearConfirm,
-            onConfirm = onConfirmClear,
-        )
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun UnlockTopBar(isUnlocked: Boolean, showBackNavigation: Boolean, onBackClick: () -> Unit) {
+private fun UnlockTopBar(
+    isUnlocked: Boolean,
+    isRebinding: Boolean,
+    showBackNavigation: Boolean,
+    onBackClick: () -> Unit,
+) {
+    val titleRes = when {
+        isUnlocked && isRebinding -> R.string.feature_unlock_rebind_title
+        isUnlocked -> R.string.feature_unlock_manage_title
+        else -> R.string.feature_unlock_title
+    }
     TopAppBar(
-        title = {
-            Text(
-                text = stringResource(
-                    if (isUnlocked) R.string.feature_unlock_manage_title else R.string.feature_unlock_title,
-                ),
-            )
-        },
+        title = { Text(text = stringResource(titleRes)) },
         navigationIcon = {
             if (showBackNavigation) {
                 IconButton(onClick = onBackClick) {
@@ -338,12 +485,17 @@ private fun LockReasonBannerCard(reason: LockReason) {
     } else {
         MaterialTheme.colorScheme.onErrorContainer
     }
-    val textRes = when (reason) {
-        LockReason.NOT_ACTIVATED -> R.string.feature_unlock_reason_not_activated
-        LockReason.EXPIRED -> R.string.feature_unlock_reason_expired
-        LockReason.CLOCK_ROLLBACK_DETECTED -> R.string.feature_unlock_reason_clock_rollback
-        LockReason.REVOKED -> R.string.feature_unlock_reason_revoked
-        LockReason.INVALID_SIGNATURE -> R.string.feature_unlock_reason_invalid_signature
+    val (badgeRes, textRes) = when (reason) {
+        LockReason.NOT_ACTIVATED ->
+            R.string.feature_unlock_badge_not_activated to R.string.feature_unlock_reason_not_activated
+        LockReason.EXPIRED ->
+            R.string.feature_unlock_badge_expired to R.string.feature_unlock_reason_expired
+        LockReason.CLOCK_ROLLBACK_DETECTED ->
+            R.string.feature_unlock_badge_clock_rollback to R.string.feature_unlock_reason_clock_rollback
+        LockReason.REVOKED ->
+            R.string.feature_unlock_badge_revoked to R.string.feature_unlock_reason_revoked
+        LockReason.INVALID_SIGNATURE ->
+            R.string.feature_unlock_badge_invalid_signature to R.string.feature_unlock_reason_invalid_signature
     }
 
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
@@ -355,7 +507,7 @@ private fun LockReasonBannerCard(reason: LockReason) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             ToolboxStatusBadge(
-                text = reason.name,
+                text = stringResource(badgeRes),
                 containerColor = container,
                 contentColor = contentColor,
             )
@@ -370,7 +522,7 @@ private fun LockReasonBannerCard(reason: LockReason) {
 }
 
 @Composable
-private fun DeviceChallengeCard(deviceChallenge: String, onCopyChallenge: () -> Unit) {
+private fun DeviceChallengeCard(deviceChallenge: String, isCopiedRecently: Boolean, onCopyChallenge: () -> Unit) {
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(ToolboxSpacing.medium),
@@ -390,11 +542,19 @@ private fun DeviceChallengeCard(deviceChallenge: String, onCopyChallenge: () -> 
                     enabled = deviceChallenge.isNotEmpty(),
                 ) {
                     Icon(
-                        imageVector = Icons.Outlined.ContentCopy,
+                        imageVector = if (isCopiedRecently) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
                         contentDescription = null,
                         modifier = Modifier.padding(end = ToolboxSpacing.extraSmall),
                     )
-                    Text(text = stringResource(R.string.feature_unlock_copy_code))
+                    Text(
+                        text = stringResource(
+                            if (isCopiedRecently) {
+                                R.string.feature_unlock_copied_short
+                            } else {
+                                R.string.feature_unlock_copy_code
+                            },
+                        ),
+                    )
                 }
             }
             SelectionContainer {
@@ -417,81 +577,57 @@ private fun DeviceChallengeCard(deviceChallenge: String, onCopyChallenge: () -> 
 private fun ActivationFormCard(
     uiState: UnlockUiState,
     hasCameraPermission: Boolean,
+    isPermanentlyDenied: Boolean,
     onKeyInputChange: (String) -> Unit,
     onPasteClick: () -> Unit,
     onScanClick: () -> Unit,
+    onPermissionActionClick: () -> Unit,
     onCloseScanner: () -> Unit,
     onToggleTorch: () -> Unit,
     onBarcodeScanned: (BarcodeScanResult) -> Unit,
-    onOpenAppSettings: () -> Unit,
     onActivateClick: () -> Unit,
     onCancelRebind: (() -> Unit)?,
 ) {
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val isSubmitEnabled = !uiState.isSubmitting && uiState.keyInput.isNotBlank()
+    val dismissKeyboardAndSubmit = {
+        focusManager.clearFocus()
+        keyboardController?.hide()
+        if (isSubmitEnabled) {
+            onActivateClick()
+        }
+    }
+
     ElevatedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(ToolboxSpacing.medium),
             verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
         ) {
-            OutlinedTextField(
-                value = uiState.keyInput,
-                onValueChange = onKeyInputChange,
-                label = { Text(text = stringResource(R.string.feature_unlock_key_input_label)) },
-                placeholder = { Text(text = stringResource(R.string.feature_unlock_key_input_hint)) },
-                maxLines = 4,
-                isError = !uiState.errorDetail.isNullOrBlank(),
-                supportingText = uiState.errorDetail?.let { detail ->
-                    { Text(text = detail) }
-                },
-                modifier = Modifier.fillMaxWidth(),
+            ActivationKeyInputField(
+                keyInput = uiState.keyInput,
+                isSubmitting = uiState.isSubmitting,
+                hasActivationError = uiState.hasActivationError,
+                onKeyInputChange = onKeyInputChange,
+                onDoneAction = dismissKeyboardAndSubmit,
             )
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
-            ) {
-                OutlinedButton(
-                    onClick = onPasteClick,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.ContentPaste,
-                        contentDescription = null,
-                        modifier = Modifier.padding(end = ToolboxSpacing.extraSmall),
-                    )
-                    Text(text = stringResource(R.string.feature_unlock_paste))
-                }
-                OutlinedButton(
-                    onClick = if (uiState.isScannerOpen) onCloseScanner else onScanClick,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Icon(
-                        imageVector = if (uiState.isScannerOpen) {
-                            Icons.Outlined.Close
-                        } else {
-                            Icons.Outlined.QrCodeScanner
-                        },
-                        contentDescription = null,
-                        modifier = Modifier.padding(end = ToolboxSpacing.extraSmall),
-                    )
-                    Text(
-                        text = stringResource(
-                            if (uiState.isScannerOpen) {
-                                R.string.feature_unlock_close_scanner
-                            } else {
-                                R.string.feature_unlock_scan_qr
-                            },
-                        ),
-                    )
-                }
-            }
+            PasteAndScanActionRow(
+                isScannerOpen = uiState.isScannerOpen,
+                onPasteClick = onPasteClick,
+                onScanToggleClick = if (uiState.isScannerOpen) onCloseScanner else onScanClick,
+            )
 
             if (uiState.isScannerOpen) {
                 UnlockScannerSection(
                     hasCameraPermission = hasCameraPermission,
+                    isPermanentlyDenied = isPermanentlyDenied,
+                    isScanningEnabled = !uiState.isSubmitting,
                     torchEnabled = uiState.torchEnabled,
                     onBarcodeScanned = onBarcodeScanned,
                     onToggleTorch = onToggleTorch,
-                    onOpenAppSettings = onOpenAppSettings,
+                    onCloseScanner = onCloseScanner,
+                    onPermissionActionClick = onPermissionActionClick,
                 )
             }
 
@@ -499,9 +635,90 @@ private fun ActivationFormCard(
 
             ActivationSubmitRow(
                 isSubmitting = uiState.isSubmitting,
-                isSubmitEnabled = !uiState.isSubmitting && uiState.keyInput.isNotBlank(),
-                onActivateClick = onActivateClick,
+                isSubmitEnabled = isSubmitEnabled,
+                onActivateClick = dismissKeyboardAndSubmit,
                 onCancelRebind = onCancelRebind,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ActivationKeyInputField(
+    keyInput: String,
+    isSubmitting: Boolean,
+    hasActivationError: Boolean,
+    onKeyInputChange: (String) -> Unit,
+    onDoneAction: () -> Unit,
+) {
+    OutlinedTextField(
+        value = keyInput,
+        onValueChange = onKeyInputChange,
+        label = { Text(text = stringResource(R.string.feature_unlock_key_input_label)) },
+        placeholder = { Text(text = stringResource(R.string.feature_unlock_key_input_hint)) },
+        trailingIcon = if (keyInput.isNotEmpty() && !isSubmitting) {
+            {
+                IconButton(onClick = { onKeyInputChange("") }) {
+                    Icon(
+                        imageVector = Icons.Outlined.Close,
+                        contentDescription = stringResource(R.string.feature_unlock_clear_input),
+                    )
+                }
+            }
+        } else {
+            null
+        },
+        maxLines = 4,
+        isError = hasActivationError,
+        supportingText = if (hasActivationError) {
+            { Text(text = stringResource(R.string.feature_unlock_key_input_error)) }
+        } else {
+            null
+        },
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Text,
+            autoCorrectEnabled = false,
+            imeAction = ImeAction.Done,
+        ),
+        keyboardActions = KeyboardActions(onDone = { onDoneAction() }),
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+@Composable
+private fun PasteAndScanActionRow(isScannerOpen: Boolean, onPasteClick: () -> Unit, onScanToggleClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small),
+    ) {
+        OutlinedButton(
+            onClick = onPasteClick,
+            modifier = Modifier.weight(1f),
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.ContentPaste,
+                contentDescription = null,
+                modifier = Modifier.padding(end = ToolboxSpacing.extraSmall),
+            )
+            Text(text = stringResource(R.string.feature_unlock_paste))
+        }
+        OutlinedButton(
+            onClick = onScanToggleClick,
+            modifier = Modifier.weight(1f),
+        ) {
+            Icon(
+                imageVector = if (isScannerOpen) Icons.Outlined.Close else Icons.Outlined.QrCodeScanner,
+                contentDescription = null,
+                modifier = Modifier.padding(end = ToolboxSpacing.extraSmall),
+            )
+            Text(
+                text = stringResource(
+                    if (isScannerOpen) {
+                        R.string.feature_unlock_close_scanner
+                    } else {
+                        R.string.feature_unlock_scan_qr
+                    },
+                ),
             )
         }
     }
@@ -510,42 +727,56 @@ private fun ActivationFormCard(
 @Composable
 private fun UnlockScannerSection(
     hasCameraPermission: Boolean,
+    isPermanentlyDenied: Boolean,
+    isScanningEnabled: Boolean,
     torchEnabled: Boolean,
     onBarcodeScanned: (BarcodeScanResult) -> Unit,
     onToggleTorch: () -> Unit,
-    onOpenAppSettings: () -> Unit,
+    onCloseScanner: () -> Unit,
+    onPermissionActionClick: () -> Unit,
 ) {
     if (!hasCameraPermission) {
         PermissionGuideCard(
             title = stringResource(R.string.feature_unlock_camera_perm_title),
             rationale = stringResource(R.string.feature_unlock_camera_perm_desc),
-            onRequestPermission = onOpenAppSettings,
-            isPermanentlyDenied = true,
+            onRequestPermission = onPermissionActionClick,
+            isPermanentlyDenied = isPermanentlyDenied,
         )
         return
     }
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(220.dp)
-            .clip(MaterialTheme.shapes.medium),
-    ) {
-        BarcodeScannerView(
-            onBarcodeDetected = onBarcodeScanned,
-            torchEnabled = torchEnabled,
-            modifier = Modifier.fillMaxSize(),
-        )
-        IconButton(
-            onClick = onToggleTorch,
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Box(
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(ToolboxSpacing.small),
+                .fillMaxWidth()
+                .padding(ToolboxSpacing.small)
+                .height(220.dp)
+                .clip(MaterialTheme.shapes.medium),
         ) {
-            Icon(
-                imageVector = if (torchEnabled) Icons.Outlined.FlashlightOff else Icons.Outlined.FlashlightOn,
-                contentDescription = stringResource(R.string.feature_unlock_toggle_torch),
-                tint = MaterialTheme.colorScheme.onPrimary,
+            BarcodeScannerView(
+                onBarcodeDetected = onBarcodeScanned,
+                isScanningEnabled = isScanningEnabled,
+                torchEnabled = torchEnabled,
+                modifier = Modifier.fillMaxSize(),
             )
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(ToolboxSpacing.small),
+                horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.extraSmall),
+            ) {
+                FilledTonalIconButton(onClick = onToggleTorch) {
+                    Icon(
+                        imageVector = if (torchEnabled) Icons.Outlined.FlashlightOff else Icons.Outlined.FlashlightOn,
+                        contentDescription = stringResource(R.string.feature_unlock_toggle_torch),
+                    )
+                }
+                FilledTonalIconButton(onClick = onCloseScanner) {
+                    Icon(
+                        imageVector = Icons.Outlined.Close,
+                        contentDescription = stringResource(R.string.feature_unlock_close_scanner),
+                    )
+                }
+            }
         }
     }
 }
@@ -595,6 +826,7 @@ private fun ActivationSubmitRow(
 private fun UnlockedEntitlementCard(
     entitlement: LicenseEntitlement,
     deviceChallenge: String,
+    isCopiedRecently: Boolean,
     onCopyChallenge: () -> Unit,
     onStartRebind: () -> Unit,
     onRequestClear: () -> Unit,
@@ -657,6 +889,7 @@ private fun UnlockedEntitlementCard(
             if (deviceChallenge.isNotEmpty()) {
                 UnlockedDeviceChallengeBox(
                     deviceChallenge = deviceChallenge,
+                    isCopiedRecently = isCopiedRecently,
                     onCopyChallenge = onCopyChallenge,
                 )
             }
@@ -670,7 +903,11 @@ private fun UnlockedEntitlementCard(
 }
 
 @Composable
-private fun UnlockedDeviceChallengeBox(deviceChallenge: String, onCopyChallenge: () -> Unit) {
+private fun UnlockedDeviceChallengeBox(
+    deviceChallenge: String,
+    isCopiedRecently: Boolean,
+    onCopyChallenge: () -> Unit,
+) {
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -685,15 +922,23 @@ private fun UnlockedDeviceChallengeBox(deviceChallenge: String, onCopyChallenge:
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(
-                    text = deviceChallenge,
-                    style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                )
+                SelectionContainer {
+                    Text(
+                        text = deviceChallenge,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                    )
+                }
             }
             IconButton(onClick = onCopyChallenge) {
                 Icon(
-                    imageVector = Icons.Outlined.ContentCopy,
-                    contentDescription = stringResource(R.string.feature_unlock_copy_code),
+                    imageVector = if (isCopiedRecently) Icons.Outlined.Check else Icons.Outlined.ContentCopy,
+                    contentDescription = stringResource(
+                        if (isCopiedRecently) {
+                            R.string.feature_unlock_copied_short
+                        } else {
+                            R.string.feature_unlock_copy_code
+                        },
+                    ),
                 )
             }
         }
@@ -749,15 +994,29 @@ private fun EntitlementDetailRow(label: String, value: String) {
     }
 }
 
-@Composable
-private fun feedbackText(kind: UnlockFeedbackKind?): String? = when (kind) {
-    UnlockFeedbackKind.CHALLENGE_COPIED -> stringResource(R.string.feature_unlock_feedback_copied)
-    UnlockFeedbackKind.ACTIVATION_SUCCEEDED -> stringResource(R.string.feature_unlock_feedback_activated)
-    UnlockFeedbackKind.ACTIVATION_FAILED_EMPTY -> stringResource(R.string.feature_unlock_feedback_empty)
-    UnlockFeedbackKind.ACTIVATION_FAILED_INVALID -> stringResource(R.string.feature_unlock_feedback_invalid)
-    UnlockFeedbackKind.LICENSE_CLEARED -> stringResource(R.string.feature_unlock_feedback_cleared)
-    UnlockFeedbackKind.SCAN_FAILED -> stringResource(R.string.feature_unlock_feedback_scan_failed)
+private fun feedbackTextRes(kind: UnlockFeedbackKind?): Int? = when (kind) {
+    UnlockFeedbackKind.CHALLENGE_COPIED -> R.string.feature_unlock_feedback_copied
+    UnlockFeedbackKind.CLIPBOARD_EMPTY -> R.string.feature_unlock_feedback_clipboard_empty
+    UnlockFeedbackKind.ACTIVATION_SUCCEEDED -> R.string.feature_unlock_feedback_activated
+    UnlockFeedbackKind.ACTIVATION_FAILED_EMPTY -> R.string.feature_unlock_feedback_empty
+    UnlockFeedbackKind.ACTIVATION_FAILED_INVALID -> R.string.feature_unlock_feedback_invalid
+    UnlockFeedbackKind.LICENSE_CLEARED -> R.string.feature_unlock_feedback_cleared
+    UnlockFeedbackKind.SCAN_FAILED -> R.string.feature_unlock_feedback_scan_failed
     UnlockFeedbackKind.SCAN_CANCELLED, null -> null
+}
+
+private fun checkCameraGranted(context: Context): Boolean =
+    ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+private fun shouldShowCameraRationale(context: Context): Boolean {
+    val activity = context.findActivity() ?: return false
+    return ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.CAMERA)
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
 
 private fun copyText(context: Context, label: String, value: String) {

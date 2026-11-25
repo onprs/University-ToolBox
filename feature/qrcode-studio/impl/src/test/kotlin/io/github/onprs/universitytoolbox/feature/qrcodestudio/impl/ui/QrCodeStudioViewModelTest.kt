@@ -15,7 +15,9 @@ import io.github.onprs.universitytoolbox.core.scanner.BarcodeScanner
 import io.github.onprs.universitytoolbox.core.scanner.BarcodeScannerMode
 import io.github.onprs.universitytoolbox.feature.qrcodestudio.api.QR_CODE_STUDIO_TOOL_ID
 import io.github.onprs.universitytoolbox.feature.qrcodestudio.impl.domain.QrPayloadCategory
+import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -96,7 +98,7 @@ class QrCodeStudioViewModelTest {
     }
 
     @Test
-    fun `manual inspection live scan and history deduplication update state and metadata safely`() = runTest {
+    fun `manual inspection live scan guard and history management update state safely`() = runTest {
         val scanner = FakeBarcodeScanner()
         val metadata = FakeMetadataRepository()
         var nowMs = 1_700_000_000_000L
@@ -106,7 +108,8 @@ class QrCodeStudioViewModelTest {
             timeProvider = TimeProvider { nowMs },
         )
 
-        viewModel.updateManualInput("https://portal.university.edu/course?token=hidden123")
+        viewModel.applyPastedManualInput("  https://portal.university.edu/course?token=hidden123  ")
+        assertEquals("https://portal.university.edu/course?token=hidden123", viewModel.uiState.value.manualInput)
         viewModel.inspectManualInput()
         advanceUntilIdle()
 
@@ -115,12 +118,14 @@ class QrCodeStudioViewModelTest {
         assertEquals(QrPayloadCategory.URL, first?.category)
         assertEquals("", viewModel.uiState.value.manualInput)
         assertEquals(listOf(QR_CODE_STUDIO_TOOL_ID), metadata.recordedToolIds)
-        assertTrue(metadata.auditSummaries.single().none { false })
         assertFalse(metadata.auditSummaries.single().contains("hidden123"))
 
         nowMs += 1_000L
         viewModel.openScanner()
+        viewModel.toggleTorch()
         assertTrue(viewModel.uiState.value.isScannerOpen)
+        assertTrue(viewModel.uiState.value.torchEnabled)
+
         viewModel.onLiveBarcodeDetected(
             BarcodeScanResult(
                 rawValue = "WIFI:T:WPA;S:CampusNet;P:SecretPass;;",
@@ -130,24 +135,48 @@ class QrCodeStudioViewModelTest {
                 sourceMode = BarcodeScannerMode.LIVE_CAMERA,
             ),
         )
+        // 紧随其后的相机残余帧回调在扫码器关闭后应被直接忽略，避免震荡
+        viewModel.onLiveBarcodeDetected(
+            BarcodeScanResult(
+                rawValue = "https://duplicate-trailing-frame.org",
+                displayValue = null,
+                format = BarcodeFormat.QR_CODE,
+                detectedAtEpochMs = nowMs + 10L,
+                sourceMode = BarcodeScannerMode.LIVE_CAMERA,
+            ),
+        )
         advanceUntilIdle()
 
         assertFalse(viewModel.uiState.value.isScannerOpen)
+        assertFalse(viewModel.uiState.value.torchEnabled)
         assertEquals(2, viewModel.uiState.value.history.size)
         assertEquals(QrPayloadCategory.WIFI, viewModel.uiState.value.selectedPayload?.category)
 
         viewModel.toggleFieldVisibility("field-0")
         assertTrue("field-0" in viewModel.uiState.value.revealedFieldIds)
-        viewModel.toggleFieldVisibility("field-0")
-        assertFalse("field-0" in viewModel.uiState.value.revealedFieldIds)
 
-        viewModel.clearHistory()
+        // 删除非选中项时保留当前选中项与敏感字段显隐状态
+        viewModel.removeHistoryItem(first!!.id)
+        assertEquals(1, viewModel.uiState.value.history.size)
+        assertEquals(QrPayloadCategory.WIFI, viewModel.uiState.value.selectedPayload?.category)
+        assertTrue("field-0" in viewModel.uiState.value.revealedFieldIds)
+
+        // 清空记录二次确认防误触保护
+        viewModel.setClearHistoryConfirmOpen(true)
+        assertTrue(viewModel.uiState.value.isClearHistoryConfirmOpen)
+        viewModel.setClearHistoryConfirmOpen(false)
+        assertFalse(viewModel.uiState.value.isClearHistoryConfirmOpen)
+        assertEquals(1, viewModel.uiState.value.history.size)
+
+        viewModel.setClearHistoryConfirmOpen(true)
+        viewModel.confirmClearHistory()
+        assertFalse(viewModel.uiState.value.isClearHistoryConfirmOpen)
         assertTrue(viewModel.uiState.value.history.isEmpty())
         assertNull(viewModel.uiState.value.selectedPayload)
     }
 
     @Test
-    fun `image scan handles success empty result and scanner failure cleanly`() = runTest {
+    fun `image scan and sampled bitmap decoding handle success empty and failure cleanly`() = runTest {
         val scanner = FakeBarcodeScanner()
         val metadata = FakeMetadataRepository()
         val viewModel = QrCodeStudioViewModel(
@@ -173,14 +202,29 @@ class QrCodeStudioViewModelTest {
                 ),
             ),
         )
-        viewModel.scanImageUri(dummyUri)
+        val mockBitmap = mockk<Bitmap>(relaxed = true)
+        every { mockBitmap.isRecycled } returns false
+        viewModel.scanPickedImage { mockBitmap }
         advanceUntilIdle()
         assertNull(viewModel.uiState.value.noticeMessage)
         assertEquals(QrPayloadCategory.URL, viewModel.uiState.value.selectedPayload?.category)
+        verify { mockBitmap.recycle() }
+
+        viewModel.scanPickedImage { null }
+        advanceUntilIdle()
+        assertEquals(StudioNoticeMessage.IMAGE_SCAN_FAILED, viewModel.uiState.value.noticeMessage)
 
         scanner.nextResult = AppResult.Failure(DomainError.Unknown("Decode error"))
         viewModel.scanImageUri(dummyUri)
         advanceUntilIdle()
         assertEquals(StudioNoticeMessage.IMAGE_SCAN_FAILED, viewModel.uiState.value.noticeMessage)
+    }
+
+    @Test
+    fun `calculateInSampleSize scales down oversized gallery dimensions safely`() {
+        assertEquals(1, SafeImageBitmapDecoder.calculateInSampleSize(1080, 1920, maxDimension = 2048))
+        assertEquals(2, SafeImageBitmapDecoder.calculateInSampleSize(4000, 3000, maxDimension = 2048))
+        assertEquals(8, SafeImageBitmapDecoder.calculateInSampleSize(12000, 9000, maxDimension = 2048))
+        assertEquals(1, SafeImageBitmapDecoder.calculateInSampleSize(0, -10, maxDimension = 2048))
     }
 }

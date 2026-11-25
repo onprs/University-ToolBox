@@ -4,10 +4,11 @@ import androidx.lifecycle.ViewModel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.onprs.universitytoolbox.feature.gpa.impl.domain.GpaCalculator
 import io.github.onprs.universitytoolbox.feature.gpa.impl.domain.GpaCourse
+import io.github.onprs.universitytoolbox.feature.gpa.impl.domain.GpaInputValidator
 import io.github.onprs.universitytoolbox.feature.gpa.impl.domain.GpaScale
 import io.github.onprs.universitytoolbox.feature.gpa.impl.domain.GpaSummary
 import io.github.onprs.universitytoolbox.feature.gpa.impl.domain.TargetGpaProjection
-import io.github.onprs.universitytoolbox.feature.gpa.impl.domain.TargetGpaRequest
+import io.github.onprs.universitytoolbox.feature.gpa.impl.domain.TargetPlannerValidation
 import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
@@ -34,10 +35,14 @@ data class GpaUiState(
     val summary: GpaSummary = GpaCalculator.calculateSummary(emptyList(), GpaScale.PKU_4_0),
     val editingCourse: GpaCourse? = null,
     val isCourseDialogOpen: Boolean = false,
+    val pendingDeleteCourse: GpaCourse? = null,
+    val isClearAllConfirmOpen: Boolean = false,
+    val scrollToCourseId: String? = null,
     val completedCreditsInput: String = "",
     val currentGpaInput: String = "",
     val plannedCreditsInput: String = DEFAULT_PLANNED_CREDITS,
     val targetGpaInput: String = DEFAULT_TARGET_GPA,
+    val targetValidation: TargetPlannerValidation = TargetPlannerValidation(),
     val targetProjection: TargetGpaProjection? = null,
 ) {
     companion object {
@@ -51,7 +56,7 @@ data class GpaUiState(
  */
 @HiltViewModel
 class GpaViewModel @Inject constructor() : ViewModel() {
-    private val mutableUiState = MutableStateFlow(GpaUiState())
+    private val mutableUiState = MutableStateFlow(recomputeState(GpaUiState()))
     val uiState: StateFlow<GpaUiState> = mutableUiState.asStateFlow()
 
     fun selectTab(tab: GpaTab) {
@@ -61,11 +66,7 @@ class GpaViewModel @Inject constructor() : ViewModel() {
     fun selectScale(scale: GpaScale) {
         mutableUiState.update { current ->
             val updatedSummary = GpaCalculator.calculateSummary(current.courses, scale)
-            val updated = current.copy(
-                selectedScale = scale,
-                summary = updatedSummary,
-            )
-            updated.copy(targetProjection = recomputeTargetProjection(updated))
+            recomputeState(current.copy(selectedScale = scale, summary = updatedSummary))
         }
     }
 
@@ -83,38 +84,46 @@ class GpaViewModel @Inject constructor() : ViewModel() {
 
     fun saveCourse(name: String, credits: Double, score: Double) {
         val trimmedName = name.trim()
-        if (!isValidCourseInput(trimmedName, credits, score)) {
+        if (!GpaInputValidator.isValidCourseSubmission(trimmedName, credits, score)) {
             return
         }
-        val normalizedScore = score.coerceIn(0.0, MAX_PERCENT_SCORE)
         mutableUiState.update { current ->
             val editing = current.editingCourse
+            var addedCourseId: String? = null
             val nextCourses = if (editing == null) {
-                current.courses + GpaCourse(
+                val created = GpaCourse(
                     id = UUID.randomUUID().toString(),
                     name = trimmedName,
                     credits = credits,
-                    score = normalizedScore,
+                    score = score,
                     included = true,
                 )
+                addedCourseId = created.id
+                current.courses + created
             } else {
                 current.courses.map { item ->
                     if (item.id == editing.id) {
-                        item.copy(name = trimmedName, credits = credits, score = normalizedScore)
+                        item.copy(name = trimmedName, credits = credits, score = score)
                     } else {
                         item
                     }
                 }
             }
             val nextSummary = GpaCalculator.calculateSummary(nextCourses, current.selectedScale)
-            val updated = current.copy(
-                courses = nextCourses,
-                summary = nextSummary,
-                editingCourse = null,
-                isCourseDialogOpen = false,
+            recomputeState(
+                current.copy(
+                    courses = nextCourses,
+                    summary = nextSummary,
+                    editingCourse = null,
+                    isCourseDialogOpen = false,
+                    scrollToCourseId = addedCourseId,
+                ),
             )
-            updated.copy(targetProjection = recomputeTargetProjection(updated))
         }
+    }
+
+    fun consumeScrollTarget() {
+        mutableUiState.update { it.copy(scrollToCourseId = null) }
     }
 
     fun toggleCourseIncluded(courseId: String) {
@@ -123,8 +132,7 @@ class GpaViewModel @Inject constructor() : ViewModel() {
                 if (item.id == courseId) item.copy(included = !item.included) else item
             }
             val nextSummary = GpaCalculator.calculateSummary(nextCourses, current.selectedScale)
-            val updated = current.copy(courses = nextCourses, summary = nextSummary)
-            updated.copy(targetProjection = recomputeTargetProjection(updated))
+            recomputeState(current.copy(courses = nextCourses, summary = nextSummary))
         }
     }
 
@@ -132,8 +140,41 @@ class GpaViewModel @Inject constructor() : ViewModel() {
         mutableUiState.update { current ->
             val nextCourses = current.courses.filterNot { it.id == courseId }
             val nextSummary = GpaCalculator.calculateSummary(nextCourses, current.selectedScale)
-            val updated = current.copy(courses = nextCourses, summary = nextSummary)
-            updated.copy(targetProjection = recomputeTargetProjection(updated))
+            recomputeState(
+                current.copy(
+                    courses = nextCourses,
+                    summary = nextSummary,
+                    pendingDeleteCourse = current.pendingDeleteCourse?.takeUnless { it.id == courseId },
+                ),
+            )
+        }
+    }
+
+    fun setPendingDeleteCourse(course: GpaCourse?) {
+        mutableUiState.update { it.copy(pendingDeleteCourse = course) }
+    }
+
+    fun confirmDeleteCourse() {
+        val targetId = mutableUiState.value.pendingDeleteCourse?.id ?: return
+        removeCourse(targetId)
+    }
+
+    fun setClearAllConfirmOpen(open: Boolean) {
+        mutableUiState.update { it.copy(isClearAllConfirmOpen = open && it.courses.isNotEmpty()) }
+    }
+
+    fun confirmClearAllCourses() {
+        mutableUiState.update { current ->
+            val nextSummary = GpaCalculator.calculateSummary(emptyList(), current.selectedScale)
+            recomputeState(
+                current.copy(
+                    courses = emptyList(),
+                    summary = nextSummary,
+                    pendingDeleteCourse = null,
+                    isClearAllConfirmOpen = false,
+                    scrollToCourseId = null,
+                ),
+            )
         }
     }
 
@@ -145,18 +186,24 @@ class GpaViewModel @Inject constructor() : ViewModel() {
         )
         mutableUiState.update { current ->
             val nextSummary = GpaCalculator.calculateSummary(sampleCourses, current.selectedScale)
-            val updated = current.copy(courses = sampleCourses, summary = nextSummary)
-            updated.copy(targetProjection = recomputeTargetProjection(updated))
+            recomputeState(
+                current.copy(
+                    courses = sampleCourses,
+                    summary = nextSummary,
+                    scrollToCourseId = sampleCourses.first().id,
+                ),
+            )
         }
     }
 
     fun syncTargetFromCurrentCourses() {
         mutableUiState.update { current ->
-            val updated = current.copy(
-                completedCreditsInput = formatDecimal(current.summary.totalCredits),
-                currentGpaInput = formatDecimal(current.summary.gpa),
+            recomputeState(
+                current.copy(
+                    completedCreditsInput = formatDecimal(current.summary.totalCredits),
+                    currentGpaInput = formatDecimal(current.summary.gpa),
+                ),
             )
-            updated.copy(targetProjection = recomputeTargetProjection(updated))
         }
     }
 
@@ -177,35 +224,26 @@ class GpaViewModel @Inject constructor() : ViewModel() {
     }
 
     private fun updateTargetField(transform: (GpaUiState) -> GpaUiState) {
-        mutableUiState.update { current ->
-            val updated = transform(current)
-            updated.copy(targetProjection = recomputeTargetProjection(updated))
-        }
+        mutableUiState.update { current -> recomputeState(transform(current)) }
     }
 
-    private fun recomputeTargetProjection(state: GpaUiState): TargetGpaProjection? {
-        val completed = state.completedCreditsInput.toDoubleOrNull() ?: return null
-        val currentGpa = state.currentGpaInput.toDoubleOrNull() ?: return null
-        val planned = state.plannedCreditsInput.toDoubleOrNull() ?: return null
-        val target = state.targetGpaInput.toDoubleOrNull() ?: return null
-        return GpaCalculator.projectTargetGpa(
-            TargetGpaRequest(
-                scale = state.selectedScale,
-                completedCredits = completed,
-                currentGpa = currentGpa,
-                plannedCredits = planned,
-                targetGpa = target,
-            ),
+    private fun recomputeState(state: GpaUiState): GpaUiState {
+        val (validation, projection) = GpaInputValidator.evaluateTargetInputs(
+            scale = state.selectedScale,
+            completedInput = state.completedCreditsInput,
+            currentGpaInput = state.currentGpaInput,
+            plannedInput = state.plannedCreditsInput,
+            targetGpaInput = state.targetGpaInput,
+        )
+        return state.copy(
+            targetValidation = validation,
+            targetProjection = projection,
         )
     }
-
-    private fun isValidCourseInput(name: String, credits: Double, score: Double): Boolean =
-        name.isNotEmpty() && credits.isFinite() && credits > 0.0 && score.isFinite()
 
     private fun formatDecimal(value: Double): String = String.format(Locale.US, "%.2f", value)
 
     private companion object {
-        const val MAX_PERCENT_SCORE = 100.0
         const val SAMPLE_CREDITS_HIGH = 4.0
         const val SAMPLE_CREDITS_MID = 3.0
         const val SAMPLE_CREDITS_LOW = 2.0
