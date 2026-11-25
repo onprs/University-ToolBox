@@ -9,6 +9,9 @@ private/
 *.keystore
 *.jks
 
+# 本地规划文档
+/android_toolbox_architecture_plan.md
+
 # Gradle 与构建产物
 .gradle/
 build/
