@@ -99,7 +99,8 @@ import io.github.onprs.universitytoolbox.core.designsystem.component.ToolboxStat
 import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxRadius
 import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxSpacing
 import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxTheme
-import io.github.onprs.universitytoolbox.core.scanner.BarcodeScannerView
+import io.github.onprs.universitytoolbox.core.scanner.FullScreenBarcodeScannerDialog
+import io.github.onprs.universitytoolbox.core.scanner.FullScreenPhotoCaptureDialog
 import io.github.onprs.universitytoolbox.core.ui.ErrorStateView
 import io.github.onprs.universitytoolbox.core.ui.LoadingStateView
 import io.github.onprs.universitytoolbox.core.ui.PermissionGuideCard
@@ -427,14 +428,6 @@ private fun isLocationPermissionPermanentlyDenied(context: Context): Boolean {
     return !showFine && !showCoarse
 }
 
-private fun isCameraPermissionPermanentlyDenied(context: Context): Boolean {
-    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-        return false
-    }
-    val activity = context.findActivity() ?: return false
-    return !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.CAMERA)
-}
-
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
@@ -460,9 +453,20 @@ internal fun openAppDetailSettings(context: Context) {
 @Composable
 private fun SignExecutionModalHost(state: ChaoxingSignExecutionUiState, viewModel: ChaoxingSignExecutionViewModel) {
     val focusManager = LocalFocusManager.current
+    val qrGalleryPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) {
+            viewModel.scanQrFromImageUri(uri)
+        }
+    }
     if (state.isScannerSheetOpen) {
         QrScannerBottomSheet(
             onBarcodeScanned = viewModel::onBarcodeScanned,
+            onPickFromGallery = {
+                viewModel.setScannerSheetOpen(false)
+                qrGalleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            },
             onDismiss = { viewModel.setScannerSheetOpen(false) },
         )
     }
@@ -810,8 +814,10 @@ private fun QrSignInputSection(state: ChaoxingSignExecutionUiState, viewModel: C
 @Composable
 private fun PhotoSignInputSection(state: ChaoxingSignExecutionUiState, viewModel: ChaoxingSignExecutionViewModel) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
     val scope = rememberCoroutineScope()
     var isProcessingPhoto by remember { mutableStateOf(false) }
+    var isLiveCameraOpen by rememberSaveable { mutableStateOf(false) }
 
     val photoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
@@ -832,6 +838,50 @@ private fun PhotoSignInputSection(state: ChaoxingSignExecutionUiState, viewModel
         }
     }
 
+    if (isLiveCameraOpen) {
+        FullScreenPhotoCaptureDialog(
+            title = "拍摄签到照片",
+            maxDimensionPx = SignPhotoImageProcessor.MAX_UPLOAD_DIMENSION_PX,
+            onPhotoCaptured = { bytes ->
+                isLiveCameraOpen = false
+                viewModel.setPhoto(bytes = bytes, fileName = "sign_photo.jpg")
+            },
+            onPickFromGallery = {
+                isLiveCameraOpen = false
+                photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            },
+            onCaptureError = {
+                isLiveCameraOpen = false
+                viewModel.notifyPhotoLoadFailed()
+            },
+            onDismiss = { isLiveCameraOpen = false },
+        )
+    }
+
+    val bitmap = remember(state.photo) {
+        state.photo?.bytes?.let(SignPhotoImageProcessor::decodePreviewBitmap)
+    }
+    PhotoSignCardBody(
+        bitmap = bitmap,
+        isProcessingPhoto = isProcessingPhoto,
+        onTakeLivePhoto = {
+            focusManager.clearFocus()
+            isLiveCameraOpen = true
+        },
+        onPickFromGallery = {
+            focusManager.clearFocus()
+            photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        },
+    )
+}
+
+@Composable
+private fun PhotoSignCardBody(
+    bitmap: Bitmap?,
+    isProcessingPhoto: Boolean,
+    onTakeLivePhoto: () -> Unit,
+    onPickFromGallery: () -> Unit,
+) {
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(ToolboxSpacing.medium),
@@ -840,9 +890,6 @@ private fun PhotoSignInputSection(state: ChaoxingSignExecutionUiState, viewModel
             Text(text = "现场照片上传", style = MaterialTheme.typography.titleSmall)
             if (isProcessingPhoto) {
                 ToolboxLinearProgressBar()
-            }
-            val bitmap = remember(state.photo) {
-                state.photo?.bytes?.let(SignPhotoImageProcessor::decodePreviewBitmap)
             }
             if (bitmap != null) {
                 Image(
@@ -853,14 +900,23 @@ private fun PhotoSignInputSection(state: ChaoxingSignExecutionUiState, viewModel
                         .clip(RoundedCornerShape(ToolboxRadius.chip)),
                 )
             }
-            FilledTonalButton(
-                onClick = {
-                    photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                },
-                enabled = !isProcessingPhoto,
-            ) {
-                Icon(imageVector = Icons.Outlined.CameraAlt, contentDescription = null)
-                Text(text = if (bitmap == null) " 选择签到照片" else " 更换照片")
+            Row(horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.small)) {
+                FilledTonalButton(
+                    onClick = onTakeLivePhoto,
+                    enabled = !isProcessingPhoto,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(imageVector = Icons.Outlined.CameraAlt, contentDescription = null)
+                    Text(text = if (bitmap == null) " 现场拍照" else " 重新拍照")
+                }
+                FilledTonalButton(
+                    onClick = onPickFromGallery,
+                    enabled = !isProcessingPhoto,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(imageVector = Icons.Outlined.PhotoLibrary, contentDescription = null)
+                    Text(text = if (bitmap == null) " 相册选图" else " 相册更换")
+                }
             }
         }
     }
@@ -1407,78 +1463,22 @@ private fun BatchReportRow(report: AccountSignReport) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun QrScannerBottomSheet(onBarcodeScanned: (String) -> Unit, onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    var hasCameraPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                PackageManager.PERMISSION_GRANTED,
-        )
-    }
-    var isCameraPermanentlyDenied by rememberSaveable { mutableStateOf(false) }
+private fun QrScannerBottomSheet(
+    onBarcodeScanned: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onPickFromGallery: (() -> Unit)? = null,
+) {
     var hasHandledScan by remember { mutableStateOf(false) }
-
-    ObserveResumePermissionSync(
-        onResume = {
-            val grantedNow = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                PackageManager.PERMISSION_GRANTED
-            hasCameraPermission = grantedNow
-            if (grantedNow) {
-                isCameraPermanentlyDenied = false
+    FullScreenBarcodeScannerDialog(
+        title = "扫描课堂签到二维码",
+        onBarcodeDetected = { result ->
+            if (!hasHandledScan && result.rawValue.isNotBlank()) {
+                hasHandledScan = true
+                onBarcodeScanned(result.rawValue)
             }
         },
+        onPickFromGallery = onPickFromGallery,
+        onDismiss = onDismiss,
     )
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        hasCameraPermission = granted
-        isCameraPermanentlyDenied = if (granted) false else isCameraPermissionPermanentlyDenied(context)
-    }
-
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
-                .padding(ToolboxSpacing.medium),
-            verticalArrangement = Arrangement.spacedBy(ToolboxSpacing.medium),
-        ) {
-            Text(text = "扫描课堂签到二维码", style = MaterialTheme.typography.titleMedium)
-            if (hasCameraPermission) {
-                BarcodeScannerView(
-                    onBarcodeDetected = { result ->
-                        if (!hasHandledScan && result.rawValue.isNotBlank()) {
-                            hasHandledScan = true
-                            onBarcodeScanned(result.rawValue)
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(300.dp)
-                        .clip(RoundedCornerShape(ToolboxRadius.card)),
-                )
-            } else {
-                val rationaleText = if (isCameraPermanentlyDenied) {
-                    "相机权限已被关闭，请前往系统设置开启相机权限以扫描课堂签到二维码。"
-                } else {
-                    "用于实时扫描课堂投影展示的超星签到二维码。"
-                }
-                PermissionGuideCard(
-                    title = "需要相机权限",
-                    rationale = rationaleText,
-                    isPermanentlyDenied = isCameraPermanentlyDenied,
-                    onRequestPermission = {
-                        if (isCameraPermanentlyDenied) {
-                            openAppDetailSettings(context)
-                        } else {
-                            permissionLauncher.launch(Manifest.permission.CAMERA)
-                        }
-                    },
-                )
-            }
-        }
-    }
 }

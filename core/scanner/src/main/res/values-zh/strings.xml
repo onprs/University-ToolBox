@@ -1,0 +1,19 @@
+<resources>
+    <string name="core_scanner_close">关闭</string>
+    <string name="core_scanner_default_scan_title">扫码识别</string>
+    <string name="core_scanner_scan_hint">对准二维码或条码自动识别 · 双击画面或拖动滑块快速放大</string>
+    <string name="core_scanner_torch_on">已开照明</string>
+    <string name="core_scanner_torch_off">手电筒</string>
+    <string name="core_scanner_pick_gallery">相册识图</string>
+    <string name="core_scanner_zoom_in">放大画面</string>
+    <string name="core_scanner_zoom_out">缩小画面</string>
+    <string name="core_scanner_perm_title">需要相机权限</string>
+    <string name="core_scanner_perm_scan_rationale">授权相机权限以使用实时取景扫描二维码或条码。</string>
+    <string name="core_scanner_perm_scan_denied">相机权限已被关闭，请前往系统设置开启后再使用扫码功能。</string>
+    <string name="core_scanner_photo_title">现场拍照</string>
+    <string name="core_scanner_photo_hint">轻触画面对焦测光 · 双指捏合或拖动滑块缩放</string>
+    <string name="core_scanner_capture_shutter">拍摄照片</string>
+    <string name="core_scanner_switch_camera">切换前后镜头</string>
+    <string name="core_scanner_perm_photo_rationale">授权相机权限以拍摄课堂签到现场照片。</string>
+    <string name="core_scanner_perm_photo_denied">相机权限已被关闭，请前往系统设置开启后再使用拍照功能。</string>
+</resources>

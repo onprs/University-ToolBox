@@ -19,7 +19,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -45,8 +44,6 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DeleteSweep
-import androidx.compose.material.icons.outlined.FlashlightOff
-import androidx.compose.material.icons.outlined.FlashlightOn
 import androidx.compose.material.icons.outlined.ImageSearch
 import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material.icons.outlined.QrCodeScanner
@@ -57,7 +54,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -80,7 +76,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalResources
@@ -101,9 +96,8 @@ import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxSizes
 import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxSpacing
 import io.github.onprs.universitytoolbox.core.designsystem.theme.ToolboxTheme
 import io.github.onprs.universitytoolbox.core.scanner.BarcodeScanResult
-import io.github.onprs.universitytoolbox.core.scanner.BarcodeScannerView
+import io.github.onprs.universitytoolbox.core.scanner.FullScreenBarcodeScannerDialog
 import io.github.onprs.universitytoolbox.core.ui.EmptyStateView
-import io.github.onprs.universitytoolbox.core.ui.PermissionGuideCard
 import io.github.onprs.universitytoolbox.feature.qrcodestudio.impl.R
 import io.github.onprs.universitytoolbox.feature.qrcodestudio.impl.domain.InspectedBarcodePayload
 import io.github.onprs.universitytoolbox.feature.qrcodestudio.impl.domain.ParsedField
@@ -210,7 +204,11 @@ private fun rememberQrCameraPermissionState(onOpenScanner: () -> Unit): QrCamera
         hasPermission = hasCameraPermission,
         isPermanentlyDenied = isPermanentlyDenied,
         onScanClick = {
-            if (hasCameraPermission) onOpenScanner() else launcher.launch(Manifest.permission.CAMERA)
+            if (hasCameraPermission || isPermanentlyDenied) {
+                onOpenScanner()
+            } else {
+                launcher.launch(Manifest.permission.CAMERA)
+            }
         },
         onPermissionGuideAction = {
             if (isPermanentlyDenied) openPackageSettings(context) else launcher.launch(Manifest.permission.CAMERA)
@@ -289,13 +287,8 @@ internal fun QrCodeStudioScreen(
         QrStudioContentList(
             uiState = uiState,
             innerPadding = innerPadding,
-            hasCameraPermission = hasCameraPermission,
-            isPermanentlyDenied = isPermanentlyDenied,
             onScanClick = onScanClick,
-            onPermissionActionClick = onPermissionActionClick,
             onCloseScanner = onCloseScanner,
-            onToggleTorch = onToggleTorch,
-            onLiveBarcodeDetected = onLiveBarcodeDetected,
             onPickImageClick = onPickImageClick,
             onManualInputChange = onManualInputChange,
             onPasteManualClick = onPasteManualClick,
@@ -304,6 +297,23 @@ internal fun QrCodeStudioScreen(
             onRemoveHistoryItem = onRemoveHistoryItem,
             onToggleFieldVisibility = onToggleFieldVisibility,
             onCopyValue = onCopyValue,
+        )
+    }
+
+    if (uiState.isScannerOpen) {
+        FullScreenBarcodeScannerDialog(
+            title = stringResource(R.string.feature_qrcodestudio_scan_action),
+            externalTorchEnabled = uiState.torchEnabled,
+            onExternalToggleTorch = onToggleTorch,
+            externalHasCameraPermission = hasCameraPermission,
+            externalIsPermanentlyDenied = isPermanentlyDenied,
+            onExternalPermissionAction = onPermissionActionClick,
+            onPickFromGallery = {
+                onCloseScanner()
+                onPickImageClick()
+            },
+            onBarcodeDetected = onLiveBarcodeDetected,
+            onDismiss = onCloseScanner,
         )
     }
 
@@ -319,13 +329,8 @@ internal fun QrCodeStudioScreen(
 private fun QrStudioContentList(
     uiState: QrCodeStudioUiState,
     innerPadding: PaddingValues,
-    hasCameraPermission: Boolean,
-    isPermanentlyDenied: Boolean,
     onScanClick: () -> Unit,
-    onPermissionActionClick: () -> Unit,
     onCloseScanner: () -> Unit,
-    onToggleTorch: () -> Unit,
-    onLiveBarcodeDetected: (BarcodeScanResult) -> Unit,
     onPickImageClick: () -> Unit,
     onManualInputChange: (String) -> Unit,
     onPasteManualClick: () -> Unit,
@@ -347,13 +352,8 @@ private fun QrStudioContentList(
         item(key = "actions") {
             ScannerControlCard(
                 uiState = uiState,
-                hasCameraPermission = hasCameraPermission,
-                isPermanentlyDenied = isPermanentlyDenied,
                 onScanClick = onScanClick,
-                onPermissionActionClick = onPermissionActionClick,
                 onCloseScanner = onCloseScanner,
-                onToggleTorch = onToggleTorch,
-                onLiveBarcodeDetected = onLiveBarcodeDetected,
                 onPickImageClick = onPickImageClick,
                 onManualInputChange = onManualInputChange,
                 onPasteManualClick = onPasteManualClick,
@@ -453,13 +453,8 @@ private fun ClearHistoryConfirmDialog(onDismiss: () -> Unit, onConfirm: () -> Un
 @Composable
 private fun ScannerControlCard(
     uiState: QrCodeStudioUiState,
-    hasCameraPermission: Boolean,
-    isPermanentlyDenied: Boolean,
     onScanClick: () -> Unit,
-    onPermissionActionClick: () -> Unit,
     onCloseScanner: () -> Unit,
-    onToggleTorch: () -> Unit,
-    onLiveBarcodeDetected: (BarcodeScanResult) -> Unit,
     onPickImageClick: () -> Unit,
     onManualInputChange: (String) -> Unit,
     onPasteManualClick: () -> Unit,
@@ -479,17 +474,6 @@ private fun ScannerControlCard(
                 onScanOrCloseClick = if (uiState.isScannerOpen) onCloseScanner else onScanClick,
                 onPickImageClick = onPickImageClick,
             )
-
-            if (uiState.isScannerOpen) {
-                LiveScannerSection(
-                    hasCameraPermission = hasCameraPermission,
-                    isPermanentlyDenied = isPermanentlyDenied,
-                    torchEnabled = uiState.torchEnabled,
-                    onLiveBarcodeDetected = onLiveBarcodeDetected,
-                    onToggleTorch = onToggleTorch,
-                    onPermissionActionClick = onPermissionActionClick,
-                )
-            }
 
             ManualInspectFormSection(
                 manualInput = uiState.manualInput,
@@ -600,50 +584,6 @@ private fun ManualInspectFormSection(
             enabled = manualInput.isNotBlank(),
         ) {
             Text(text = stringResource(R.string.feature_qrcodestudio_inspect_button))
-        }
-    }
-}
-
-@Composable
-private fun LiveScannerSection(
-    hasCameraPermission: Boolean,
-    isPermanentlyDenied: Boolean,
-    torchEnabled: Boolean,
-    onLiveBarcodeDetected: (BarcodeScanResult) -> Unit,
-    onToggleTorch: () -> Unit,
-    onPermissionActionClick: () -> Unit,
-) {
-    if (!hasCameraPermission) {
-        PermissionGuideCard(
-            title = stringResource(R.string.feature_qrcodestudio_camera_perm_title),
-            rationale = stringResource(R.string.feature_qrcodestudio_camera_perm_desc),
-            onRequestPermission = onPermissionActionClick,
-            isPermanentlyDenied = isPermanentlyDenied,
-        )
-        return
-    }
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(240.dp)
-            .clip(MaterialTheme.shapes.medium),
-    ) {
-        BarcodeScannerView(
-            onBarcodeDetected = onLiveBarcodeDetected,
-            isScanningEnabled = true,
-            torchEnabled = torchEnabled,
-            modifier = Modifier.fillMaxSize(),
-        )
-        FilledTonalIconButton(
-            onClick = onToggleTorch,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(ToolboxSpacing.small),
-        ) {
-            Icon(
-                imageVector = if (torchEnabled) Icons.Outlined.FlashlightOff else Icons.Outlined.FlashlightOn,
-                contentDescription = stringResource(R.string.feature_qrcodestudio_toggle_torch),
-            )
         }
     }
 }

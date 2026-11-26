@@ -15,7 +15,6 @@ import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -42,8 +41,6 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.DeleteOutline
-import androidx.compose.material.icons.outlined.FlashlightOff
-import androidx.compose.material.icons.outlined.FlashlightOn
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.VerifiedUser
@@ -53,7 +50,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -76,7 +72,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -84,7 +79,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -100,10 +94,9 @@ import io.github.onprs.universitytoolbox.core.license.api.LicenseEntitlement
 import io.github.onprs.universitytoolbox.core.license.api.LicenseState
 import io.github.onprs.universitytoolbox.core.license.api.LockReason
 import io.github.onprs.universitytoolbox.core.scanner.BarcodeScanResult
-import io.github.onprs.universitytoolbox.core.scanner.BarcodeScannerView
+import io.github.onprs.universitytoolbox.core.scanner.FullScreenBarcodeScannerDialog
 import io.github.onprs.universitytoolbox.core.ui.DevStubBanner
 import io.github.onprs.universitytoolbox.core.ui.LoadingStateView
-import io.github.onprs.universitytoolbox.core.ui.PermissionGuideCard
 import io.github.onprs.universitytoolbox.core.ui.labelRes
 import io.github.onprs.universitytoolbox.feature.unlock.R
 import io.github.onprs.universitytoolbox.feature.unlock.domain.UnlockFeedbackKind
@@ -217,7 +210,11 @@ private fun rememberUnlockCameraPermissionState(onOpenScanner: () -> Unit): Unlo
         hasPermission = hasCameraPermission,
         isPermanentlyDenied = isPermanentlyDenied,
         onScanClick = {
-            if (hasCameraPermission) onOpenScanner() else launcher.launch(Manifest.permission.CAMERA)
+            if (hasCameraPermission || isPermanentlyDenied) {
+                onOpenScanner()
+            } else {
+                launcher.launch(Manifest.permission.CAMERA)
+            }
         },
         onPermissionGuideAction = {
             if (isPermanentlyDenied) openAppSettings(context) else launcher.launch(Manifest.permission.CAMERA)
@@ -318,17 +315,12 @@ internal fun UnlockScreen(
 
         UnlockBodyContent(
             uiState = uiState,
-            hasCameraPermission = hasCameraPermission,
-            isPermanentlyDenied = isPermanentlyDenied,
             isChallengeCopiedRecently = isChallengeCopiedRecently,
             onCopyChallenge = onCopyChallenge,
             onKeyInputChange = onKeyInputChange,
             onPasteClick = onPasteClick,
             onScanClick = onScanClick,
-            onPermissionActionClick = onPermissionActionClick,
             onCloseScanner = onCloseScanner,
-            onToggleTorch = onToggleTorch,
-            onBarcodeScanned = onBarcodeScanned,
             onActivateClick = onActivateClick,
             onStartRebind = onStartRebind,
             onCancelRebind = onCancelRebind,
@@ -338,6 +330,20 @@ internal fun UnlockScreen(
                 .padding(innerPadding)
                 .consumeWindowInsets(innerPadding)
                 .imePadding(),
+        )
+    }
+
+    if (uiState.isScannerOpen) {
+        FullScreenBarcodeScannerDialog(
+            title = stringResource(R.string.feature_unlock_scan_qr),
+            isScanningEnabled = !uiState.isSubmitting,
+            externalTorchEnabled = uiState.torchEnabled,
+            onExternalToggleTorch = onToggleTorch,
+            externalHasCameraPermission = hasCameraPermission,
+            externalIsPermanentlyDenied = isPermanentlyDenied,
+            onExternalPermissionAction = onPermissionActionClick,
+            onBarcodeDetected = onBarcodeScanned,
+            onDismiss = onCloseScanner,
         )
     }
 
@@ -352,17 +358,12 @@ internal fun UnlockScreen(
 @Composable
 private fun UnlockBodyContent(
     uiState: UnlockUiState,
-    hasCameraPermission: Boolean,
-    isPermanentlyDenied: Boolean,
     isChallengeCopiedRecently: Boolean,
     onCopyChallenge: () -> Unit,
     onKeyInputChange: (String) -> Unit,
     onPasteClick: () -> Unit,
     onScanClick: () -> Unit,
-    onPermissionActionClick: () -> Unit,
     onCloseScanner: () -> Unit,
-    onToggleTorch: () -> Unit,
-    onBarcodeScanned: (BarcodeScanResult) -> Unit,
     onActivateClick: () -> Unit,
     onStartRebind: () -> Unit,
     onCancelRebind: () -> Unit,
@@ -406,15 +407,10 @@ private fun UnlockBodyContent(
             )
             ActivationFormCard(
                 uiState = uiState,
-                hasCameraPermission = hasCameraPermission,
-                isPermanentlyDenied = isPermanentlyDenied,
                 onKeyInputChange = onKeyInputChange,
                 onPasteClick = onPasteClick,
                 onScanClick = onScanClick,
-                onPermissionActionClick = onPermissionActionClick,
                 onCloseScanner = onCloseScanner,
-                onToggleTorch = onToggleTorch,
-                onBarcodeScanned = onBarcodeScanned,
                 onActivateClick = onActivateClick,
                 onCancelRebind = if (uiState.isRebinding) onCancelRebind else null,
             )
@@ -576,15 +572,10 @@ private fun DeviceChallengeCard(deviceChallenge: String, isCopiedRecently: Boole
 @Composable
 private fun ActivationFormCard(
     uiState: UnlockUiState,
-    hasCameraPermission: Boolean,
-    isPermanentlyDenied: Boolean,
     onKeyInputChange: (String) -> Unit,
     onPasteClick: () -> Unit,
     onScanClick: () -> Unit,
-    onPermissionActionClick: () -> Unit,
     onCloseScanner: () -> Unit,
-    onToggleTorch: () -> Unit,
-    onBarcodeScanned: (BarcodeScanResult) -> Unit,
     onActivateClick: () -> Unit,
     onCancelRebind: (() -> Unit)?,
 ) {
@@ -617,19 +608,6 @@ private fun ActivationFormCard(
                 onPasteClick = onPasteClick,
                 onScanToggleClick = if (uiState.isScannerOpen) onCloseScanner else onScanClick,
             )
-
-            if (uiState.isScannerOpen) {
-                UnlockScannerSection(
-                    hasCameraPermission = hasCameraPermission,
-                    isPermanentlyDenied = isPermanentlyDenied,
-                    isScanningEnabled = !uiState.isSubmitting,
-                    torchEnabled = uiState.torchEnabled,
-                    onBarcodeScanned = onBarcodeScanned,
-                    onToggleTorch = onToggleTorch,
-                    onCloseScanner = onCloseScanner,
-                    onPermissionActionClick = onPermissionActionClick,
-                )
-            }
 
             Spacer(modifier = Modifier.height(ToolboxSpacing.extraSmall))
 
@@ -720,63 +698,6 @@ private fun PasteAndScanActionRow(isScannerOpen: Boolean, onPasteClick: () -> Un
                     },
                 ),
             )
-        }
-    }
-}
-
-@Composable
-private fun UnlockScannerSection(
-    hasCameraPermission: Boolean,
-    isPermanentlyDenied: Boolean,
-    isScanningEnabled: Boolean,
-    torchEnabled: Boolean,
-    onBarcodeScanned: (BarcodeScanResult) -> Unit,
-    onToggleTorch: () -> Unit,
-    onCloseScanner: () -> Unit,
-    onPermissionActionClick: () -> Unit,
-) {
-    if (!hasCameraPermission) {
-        PermissionGuideCard(
-            title = stringResource(R.string.feature_unlock_camera_perm_title),
-            rationale = stringResource(R.string.feature_unlock_camera_perm_desc),
-            onRequestPermission = onPermissionActionClick,
-            isPermanentlyDenied = isPermanentlyDenied,
-        )
-        return
-    }
-    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(ToolboxSpacing.small)
-                .height(220.dp)
-                .clip(MaterialTheme.shapes.medium),
-        ) {
-            BarcodeScannerView(
-                onBarcodeDetected = onBarcodeScanned,
-                isScanningEnabled = isScanningEnabled,
-                torchEnabled = torchEnabled,
-                modifier = Modifier.fillMaxSize(),
-            )
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(ToolboxSpacing.small),
-                horizontalArrangement = Arrangement.spacedBy(ToolboxSpacing.extraSmall),
-            ) {
-                FilledTonalIconButton(onClick = onToggleTorch) {
-                    Icon(
-                        imageVector = if (torchEnabled) Icons.Outlined.FlashlightOff else Icons.Outlined.FlashlightOn,
-                        contentDescription = stringResource(R.string.feature_unlock_toggle_torch),
-                    )
-                }
-                FilledTonalIconButton(onClick = onCloseScanner) {
-                    Icon(
-                        imageVector = Icons.Outlined.Close,
-                        contentDescription = stringResource(R.string.feature_unlock_close_scanner),
-                    )
-                }
-            }
         }
     }
 }

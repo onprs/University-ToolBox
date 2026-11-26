@@ -10,8 +10,13 @@ android {
 
 dependencies {
     api(libs.universitytoolbox.core.common)
+    implementation(projects.core.designsystem)
+    implementation(projects.core.ui)
+    implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.runtime)
     implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.camera.core)

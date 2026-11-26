@@ -223,9 +223,23 @@ private fun AccountsDialogsHost(
         )
     }
 
+    val importScannerGalleryPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) {
+            viewModel.scanImportQrFromUri(uri)
+        }
+    }
+
     if (state.isImportScannerOpen) {
         ChaoxingImportQrScannerSheet(
             onBarcodeScanned = viewModel::onImportBarcodeScanned,
+            onPickFromGallery = {
+                viewModel.setImportScannerOpen(false)
+                importScannerGalleryPicker.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                )
+            },
             onDismiss = { viewModel.setImportScannerOpen(false) },
         )
     }

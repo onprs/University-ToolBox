@@ -1,0 +1,19 @@
+<resources>
+    <string name="core_scanner_close">Close</string>
+    <string name="core_scanner_default_scan_title">Scan Code</string>
+    <string name="core_scanner_scan_hint">Align the code within the frame · Double-tap or slide to zoom</string>
+    <string name="core_scanner_torch_on">Light On</string>
+    <string name="core_scanner_torch_off">Light</string>
+    <string name="core_scanner_pick_gallery">Album</string>
+    <string name="core_scanner_zoom_in">Zoom in</string>
+    <string name="core_scanner_zoom_out">Zoom out</string>
+    <string name="core_scanner_perm_title">Camera Permission Needed</string>
+    <string name="core_scanner_perm_scan_rationale">Grant camera access to scan codes in real time.</string>
+    <string name="core_scanner_perm_scan_denied">Camera access is turned off. Enable it in system settings to scan codes.</string>
+    <string name="core_scanner_photo_title">Take Photo</string>
+    <string name="core_scanner_photo_hint">Tap screen to focus · Pinch or slide to zoom</string>
+    <string name="core_scanner_capture_shutter">Take photo</string>
+    <string name="core_scanner_switch_camera">Switch camera</string>
+    <string name="core_scanner_perm_photo_rationale">Grant camera access to take a live check-in photo.</string>
+    <string name="core_scanner_perm_photo_denied">Camera access is turned off. Enable it in system settings to take photos.</string>
+</resources>
