@@ -19,8 +19,8 @@ android {
     defaultConfig {
         applicationId = "io.github.onprs.universitytoolbox"
         // 遵循 MAJOR * 1000000 + MINOR * 10000 + PATCH * 100
-        versionCode = 1_010_200
-        versionName = "1.1.2"
+        versionCode = 1_010_300
+        versionName = "1.1.3"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
