@@ -6,6 +6,7 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.C
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import org.jsoup.Jsoup
 
 /**
  * 超星静态图片地址归一化工具：补全协议或站点前缀，并将超星系域名下的明文 HTTP 升级为 HTTPS。
@@ -106,6 +107,7 @@ enum class ChaoxingUserSignStatus {
     UNSIGNED,
     SIGNED,
     TEACHER_SIGNED,
+    MAKEUP_SIGNED,
     LEAVE,
     ABSENT,
     SICK_LEAVE,
@@ -115,6 +117,10 @@ enum class ChaoxingUserSignStatus {
     EXPIRED,
     PUBLIC_LEAVE,
     UNKNOWN,
+    ;
+
+    val isSignedSuccess: Boolean
+        get() = this == SIGNED || this == TEACHER_SIGNED || this == MAKEUP_SIGNED || this == LATE
 }
 
 /**
@@ -359,7 +365,7 @@ object ChaoxingSignResponseParser {
 
     private val outcomeRules: List<OutcomeRule> = listOf(
         OutcomeRule(
-            matches = { text -> text.equals("success", ignoreCase = true) || text.contains("签到成功") },
+            matches = { text -> text.startsWith("success", ignoreCase = true) || text.contains("签到成功") },
             factory = { text -> ChaoxingSignRawOutcome.Success(text.ifEmpty { "签到成功" }) },
         ),
         OutcomeRule(
@@ -397,7 +403,7 @@ object ChaoxingSignResponseParser {
             },
         ),
         OutcomeRule(
-            matches = { text -> text.contains("已结束") },
+            matches = { text -> text.contains("已结束") || text.contains("截止时间") || text.contains("已过期") },
             factory = { text -> ChaoxingSignRawOutcome.Ended(text) },
         ),
         OutcomeRule(
@@ -416,12 +422,37 @@ object ChaoxingSignResponseParser {
         ),
     )
 
-    /** 将服务端纯文本响应归类为结构化业务状态。 */
+    /** 将服务端纯文本、JSON 或 HTML 状态响应归类为结构化业务状态。 */
     fun parse(rawBody: String): ChaoxingSignRawOutcome {
-        val text = rawBody.trim()
+        if (ChaoxingSafeJson.looksLikeLoginHtml(rawBody)) {
+            return ChaoxingSignRawOutcome.SessionExpired("会话已过期，请重新登录")
+        }
+        val text = normalizeSignOutcomeBody(rawBody)
         val matched = outcomeRules.firstOrNull { rule -> rule.matches(text) }
         return matched?.factory?.invoke(text)
             ?: ChaoxingSignRawOutcome.Rejected(text.ifEmpty { "未知签到响应" })
+    }
+
+    private fun normalizeSignOutcomeBody(rawBody: String): String {
+        val trimmed = rawBody.trim().removePrefix("\uFEFF")
+        if (trimmed.isEmpty()) return ""
+        val jsonObj = ChaoxingSafeJson.parseObjectOrNull(trimmed)
+        if (jsonObj != null) {
+            val isOk = jsonObj.optInt("result") == 1 ||
+                jsonObj.optBoolean("status") == true ||
+                jsonObj.optNonBlankString("state").equals("success", ignoreCase = true)
+            return if (isOk) {
+                jsonObj.optNonBlankString("msg", "state") ?: "success"
+            } else {
+                jsonObj.optNonBlankString("errorMsg", "msg", "mes", "state") ?: "签到未通过"
+            }
+        }
+        if (trimmed.startsWith("<")) {
+            val doc = Jsoup.parse(trimmed)
+            val focused = doc.selectFirst("#statuscontent, .zhuangtai, .sign-status, h1, h2")?.text()?.trim()
+            return focused?.takeIf { it.isNotEmpty() } ?: doc.body().text().trim()
+        }
+        return trimmed
     }
 }
 
@@ -436,6 +467,7 @@ object ChaoxingDomainMapper {
     private const val USER_UNSIGNED = 0
     private const val USER_SIGNED = 1
     private const val USER_TEACHER_SIGNED = 2
+    private const val USER_MAKEUP_SIGNED = 3
     private const val USER_LEAVE = 4
     private const val USER_ABSENT = 5
     private const val USER_SICK_LEAVE = 7
@@ -585,7 +617,7 @@ object ChaoxingDomainMapper {
             requireFace = dto.openCheckFaceFlag == 1,
             requireWeChat = dto.openCheckWeChatFlag == 1,
             locationText = dto.locationText?.takeIf { it.isNotBlank() },
-            locationRangeMeters = dto.locationRange?.toIntOrNull(),
+            locationRangeMeters = dto.locationRange?.toDoubleOrNull()?.toInt(),
             targetLatitude = validBd?.first,
             targetLongitude = validBd?.second,
             targetLatitudeGd = validGd?.first,
@@ -611,8 +643,8 @@ object ChaoxingDomainMapper {
         ifPhoto -> ChaoxingSignType.PHOTO
         otherId == OTHER_QR -> ChaoxingSignType.QR_CODE
         otherId == OTHER_GESTURE -> ChaoxingSignType.GESTURE
-        otherId == OTHER_LOCATION || ifOpenAddress -> ChaoxingSignType.LOCATION
         otherId == OTHER_CODE -> ChaoxingSignType.SIGN_CODE
+        otherId == OTHER_LOCATION || ifOpenAddress -> ChaoxingSignType.LOCATION
         otherId == OTHER_NORMAL || otherId.isBlank() -> ChaoxingSignType.NORMAL
         else -> ChaoxingSignType.NORMAL
     }
@@ -628,6 +660,7 @@ object ChaoxingDomainMapper {
         USER_UNSIGNED -> ChaoxingUserSignStatus.UNSIGNED
         USER_SIGNED -> ChaoxingUserSignStatus.SIGNED
         USER_TEACHER_SIGNED -> ChaoxingUserSignStatus.TEACHER_SIGNED
+        USER_MAKEUP_SIGNED -> ChaoxingUserSignStatus.MAKEUP_SIGNED
         USER_LEAVE -> ChaoxingUserSignStatus.LEAVE
         USER_ABSENT -> ChaoxingUserSignStatus.ABSENT
         USER_SICK_LEAVE -> ChaoxingUserSignStatus.SICK_LEAVE

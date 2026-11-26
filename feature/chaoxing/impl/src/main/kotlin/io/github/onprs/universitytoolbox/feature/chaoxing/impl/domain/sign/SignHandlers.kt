@@ -31,6 +31,11 @@ class NormalSignActionHandler @Inject constructor(private val remoteDataSource: 
         detail: ChaoxingActiveDetail,
         request: SignExecutionRequest,
     ): SignExecutionResult {
+        val missingLoc = ensureOptionalLocationPresent(detail, request, "该活动开启了位置范围校验，请先选择签到地点")
+        if (missingLoc != null) {
+            return missingLoc
+        }
+
         remoteDataSource.preSign(
             accountId = account.accountId,
             courseId = request.courseId,
@@ -47,7 +52,7 @@ class NormalSignActionHandler @Inject constructor(private val remoteDataSource: 
                 fid = account.fid,
                 displayName = account.displayName,
                 validate = request.captchaValidate,
-            ),
+            ).withOptionalLocation(detail, request),
         )
     }
 }
@@ -260,15 +265,9 @@ class CodeAndGestureSignActionHandler @Inject constructor(private val remoteData
         request: SignExecutionRequest,
     ): SignExecutionResult {
         val code = request.signCode?.trim().orEmpty()
-        if (code.isEmpty()) {
-            return SignExecutionResult.RequiresExtraInput(
-                missingField = SignMissingField.SIGN_CODE,
-                message = if (detail.signType == ChaoxingSignType.GESTURE) {
-                    "请输入手势轨迹序号（如 1235789）"
-                } else {
-                    "请输入教师公布的签到码"
-                },
-            )
+        val missingInput = validateCodeAndLocationInputs(code, detail, request)
+        if (missingInput != null) {
+            return missingInput
         }
 
         when (val checkRes = remoteDataSource.checkSignCode(account.accountId, detail.activeId, code)) {
@@ -297,8 +296,24 @@ class CodeAndGestureSignActionHandler @Inject constructor(private val remoteData
                 displayName = account.displayName,
                 signCode = code,
                 validate = request.captchaValidate,
-            ),
+            ).withOptionalLocation(detail, request),
         )
+    }
+
+    private fun validateCodeAndLocationInputs(
+        code: String,
+        detail: ChaoxingActiveDetail,
+        request: SignExecutionRequest,
+    ): SignExecutionResult? {
+        if (code.isEmpty()) {
+            val prompt = if (detail.signType == ChaoxingSignType.GESTURE) {
+                "请输入手势轨迹序号（如 1235789）"
+            } else {
+                "请输入教师公布的签到码"
+            }
+            return SignExecutionResult.RequiresExtraInput(SignMissingField.SIGN_CODE, prompt)
+        }
+        return ensureOptionalLocationPresent(detail, request, "该签到开启了位置范围校验，请先选择签到地点")
     }
 }
 

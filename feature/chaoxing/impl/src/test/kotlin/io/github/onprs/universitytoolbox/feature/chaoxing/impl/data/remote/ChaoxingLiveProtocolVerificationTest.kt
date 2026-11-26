@@ -63,35 +63,58 @@ class ChaoxingLiveProtocolVerificationTest {
         val courses = (coursesRes as AppResult.Success).data
         assertTrue("验证账号至少应返回 1 门课程", courses.isNotEmpty())
 
-        var inspectedDetailCount = 0
-        for (course in courses.take(MAX_COURSES_TO_PROBE)) {
+        val representativeActivities = LinkedHashMap<Pair<ChaoxingSignType, ChaoxingActivityStatus>, ChaoxingActivity>()
+        for (course in courses) {
             val activeRes = remoteDataSource.fetchActivities(
                 accountId = auth.accountId,
                 fid = auth.profile.fid,
                 courseId = course.courseId,
                 clazzId = course.clazzId,
                 cpi = course.cpi,
-                showNotStarted = false,
+                showNotStarted = true,
             )
-            assertTrue("课程活动列表请求应成功，实际: $activeRes", activeRes is AppResult.Success)
+            assertTrue(
+                "课程 [${course.name}(${course.courseId})] 活动列表请求应成功，实际: $activeRes",
+                activeRes is AppResult.Success,
+            )
             val activities = (activeRes as AppResult.Success).data
-
-            // 仅对已结束的签到活动执行只读 getPPTActiveInfo 与 getAttendInfo 详情探测，绝不调用任何提交接口
-            val safeEndedSign = activities.firstOrNull {
-                it.isSignRelated && it.activityStatus == ChaoxingActivityStatus.ENDED
-            }
-            if (safeEndedSign != null && inspectedDetailCount == 0) {
-                assertTrue(
-                    "已结束签到活动应通过只读 getAttendInfo 回填真实考勤状态而非 UNKNOWN",
-                    safeEndedSign.userStatus != ChaoxingUserSignStatus.UNKNOWN,
-                )
-                val detailRes = remoteDataSource.fetchActiveDetail(auth.accountId, safeEndedSign.activeId)
-                assertTrue("只读 getPPTActiveInfo 应解析成功，实际: $detailRes", detailRes is AppResult.Success)
-                assertTrue((detailRes as AppResult.Success).data.activeId == safeEndedSign.activeId)
-                inspectedDetailCount++
-                break
+            activities.filter { it.isSignRelated }.forEach { item ->
+                val bucket = item.signType to item.activityStatus
+                representativeActivities.putIfAbsent(bucket, item)
             }
         }
+
+        // 对全量课程中收集到的每一种 (签到类型, 活动状态) 代表性样本执行只读 getPPTActiveInfo 与 getAttendInfo 验证
+        for ((bucket, sample) in representativeActivities) {
+            val detailRes = remoteDataSource.fetchActiveDetail(auth.accountId, sample.activeId)
+            assertTrue(
+                "代表性活动 $bucket (${sample.activeId}) getPPTActiveInfo 应成功，实际: $detailRes",
+                detailRes is AppResult.Success,
+            )
+            assertTrue((detailRes as AppResult.Success).data.activeId == sample.activeId)
+
+            val attendRes = remoteDataSource.fetchSignAttendRecord(auth.accountId, sample.activeId)
+            assertTrue(
+                "代表性活动 $bucket (${sample.activeId}) getAttendInfo 应成功，实际: $attendRes",
+                attendRes is AppResult.Success,
+            )
+            if (sample.activityStatus == ChaoxingActivityStatus.ENDED) {
+                assertTrue(
+                    "已结束签到活动 (${sample.activeId}) 应回填真实考勤状态",
+                    sample.userStatus != ChaoxingUserSignStatus.UNKNOWN,
+                )
+            }
+        }
+
+        // 只读验证云盘上传临时令牌获取与机构学校检索接口
+        val panTokenRes = remoteDataSource.requestPanUploadToken(auth.accountId)
+        assertTrue("只读云盘上传令牌接口应成功，实际: $panTokenRes", panTokenRes is AppResult.Success)
+        assertFalse((panTokenRes as AppResult.Success).data.isBlank())
+
+        val schoolsRes = authRemoteDataSource.searchSchools("大学")
+        assertTrue("只读学校检索接口应成功，实际: $schoolsRes", schoolsRes is AppResult.Success)
+        assertTrue((schoolsRes as AppResult.Success).data.isNotEmpty())
+
         assertFalse(auth.accountId.isBlank())
     }
 
@@ -155,7 +178,6 @@ class ChaoxingLiveProtocolVerificationTest {
 
     companion object {
         private const val NETWORK_TIMEOUT_SEC = 20L
-        private const val MAX_COURSES_TO_PROBE = 5
         private const val MAX_PARENT_SEARCH_DEPTH = 6
     }
 }

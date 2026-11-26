@@ -30,6 +30,7 @@ internal fun ChaoxingUserSignStatus.displayLabel(): String = when (this) {
     ChaoxingUserSignStatus.UNSIGNED -> "未签"
     ChaoxingUserSignStatus.SIGNED -> "已签"
     ChaoxingUserSignStatus.TEACHER_SIGNED -> "教师代签"
+    ChaoxingUserSignStatus.MAKEUP_SIGNED -> "补签"
     ChaoxingUserSignStatus.LEAVE -> "请假"
     ChaoxingUserSignStatus.ABSENT -> "缺勤"
     ChaoxingUserSignStatus.SICK_LEAVE -> "病假"

@@ -7,10 +7,14 @@ import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.onprs.universitytoolbox.core.common.result.AppResult
+import io.github.onprs.universitytoolbox.core.common.result.DomainError
 import io.github.onprs.universitytoolbox.core.common.time.TimeProvider
 import io.github.onprs.universitytoolbox.feature.chaoxing.api.ChaoxingNavKey
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.ChaoxingAccountDao
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingRemoteDataSource
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.ChaoxingAccountManager
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.ChaoxingAccountSessionBridge
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.NoOpChaoxingAccountSessionBridge
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.ChaoxingActivitiesUiState
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.ui.state.ChaoxingActivityFilter
 import kotlinx.coroutines.Job
@@ -28,7 +32,20 @@ class ChaoxingActivitiesViewModel @AssistedInject constructor(
     private val accountDao: ChaoxingAccountDao,
     private val remoteDataSource: ChaoxingRemoteDataSource,
     private val timeProvider: TimeProvider,
+    private val sessionBridge: ChaoxingAccountSessionBridge,
 ) : ViewModel() {
+    constructor(
+        route: ChaoxingNavKey.CourseActivities,
+        accountDao: ChaoxingAccountDao,
+        remoteDataSource: ChaoxingRemoteDataSource,
+        timeProvider: TimeProvider,
+    ) : this(
+        route = route,
+        accountDao = accountDao,
+        remoteDataSource = remoteDataSource,
+        timeProvider = timeProvider,
+        sessionBridge = NoOpChaoxingAccountSessionBridge,
+    )
     private val mutableUiState = MutableStateFlow(
         ChaoxingActivitiesUiState(
             accountId = route.accountId,
@@ -119,17 +136,18 @@ class ChaoxingActivitiesViewModel @AssistedInject constructor(
     private suspend fun loadOnce() {
         mutableUiState.update { it.copy(isLoading = true, errorMessage = null) }
         try {
-            val fid = accountDao.getById(route.accountId)?.fid ?: "0"
-            when (
-                val res = remoteDataSource.fetchActivities(
-                    accountId = route.accountId,
-                    fid = fid,
-                    courseId = route.courseId,
-                    clazzId = route.clazzId,
-                    cpi = route.cpi,
-                    showNotStarted = false,
-                )
+            val initialFid = accountDao.getById(route.accountId)?.fid ?: "0"
+            val firstRes = fetchActivitiesForFid(initialFid)
+            val res = if (firstRes is AppResult.Failure &&
+                firstRes.error is DomainError.Unauthorized &&
+                sessionBridge.repairSessionIfPossible(route.accountId)
             ) {
+                val refreshedFid = accountDao.getById(route.accountId)?.fid ?: initialFid
+                fetchActivitiesForFid(refreshedFid)
+            } else {
+                firstRes
+            }
+            when (res) {
                 is AppResult.Success -> mutableUiState.update {
                     it.copy(
                         activities = res.data,
@@ -138,11 +156,20 @@ class ChaoxingActivitiesViewModel @AssistedInject constructor(
                     )
                 }
 
-                is AppResult.Failure -> mutableUiState.update {
-                    it.copy(
-                        isLoading = false,
-                        errorMessage = res.error.message,
-                    )
+                is AppResult.Failure -> {
+                    if (res.error is DomainError.Unauthorized) {
+                        accountDao.updateSessionStatus(
+                            route.accountId,
+                            ChaoxingAccountManager.SESSION_EXPIRED,
+                            timeProvider.currentTimeMillis(),
+                        )
+                    }
+                    mutableUiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = res.error.message,
+                        )
+                    }
                 }
             }
         } finally {
@@ -151,6 +178,15 @@ class ChaoxingActivitiesViewModel @AssistedInject constructor(
             }
         }
     }
+
+    private suspend fun fetchActivitiesForFid(fid: String) = remoteDataSource.fetchActivities(
+        accountId = route.accountId,
+        fid = fid,
+        courseId = route.courseId,
+        clazzId = route.clazzId,
+        cpi = route.cpi,
+        showNotStarted = false,
+    )
 
     override fun onCleared() {
         cancelMonitorLoop()

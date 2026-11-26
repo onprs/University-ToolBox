@@ -29,6 +29,7 @@ object ChaoxingDeviceIdentityHelper {
 
     private val INVALID_SEED_REGEX = Regex("^0{8,64}$")
     private val UA_DEVICE_MODEL_REGEX = Regex("\\(device:([^)]+)\\)")
+    private val UA_BUILD_MODEL_REGEX = Regex(";\\s*([^;)]+?)\\s+Build/")
     private val UA_UNIQUE_ID_REGEX = Regex("\\(@(?:Kalimdor|Azeroth)\\)_([A-Za-z0-9_-]{8,64})")
 
     private val MAINSTREAM_MODELS = listOf(
@@ -130,8 +131,10 @@ object ChaoxingDeviceIdentityHelper {
         if (rawUserAgent.isNullOrBlank()) {
             return null to null
         }
-        val model = UA_DEVICE_MODEL_REGEX.find(rawUserAgent)?.groupValues?.getOrNull(1)?.trim()
-            ?.takeIf { it.isNotEmpty() }
+        val model = (
+            UA_DEVICE_MODEL_REGEX.find(rawUserAgent)?.groupValues?.getOrNull(1)
+                ?: UA_BUILD_MODEL_REGEX.find(rawUserAgent)?.groupValues?.getOrNull(1)
+            )?.trim()?.takeIf { it.isNotEmpty() }
         val uniqueId = UA_UNIQUE_ID_REGEX.find(rawUserAgent)?.groupValues?.getOrNull(1)?.trim()
             ?.takeIf { it.isNotEmpty() }
         return model to uniqueId

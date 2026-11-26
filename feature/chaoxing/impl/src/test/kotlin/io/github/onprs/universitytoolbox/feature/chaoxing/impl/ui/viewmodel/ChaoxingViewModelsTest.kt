@@ -34,6 +34,7 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.Chaox
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.AccountCookieVault
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.AccountSessionInterceptor
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.InMemoryAccountCookieStorage
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.AccountBindResult
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.ChaoxingAccountManager
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.MultiAccountSignCoordinator
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.ChaoxingLocationService
@@ -87,6 +88,9 @@ class ChaoxingViewModelsTest {
     private lateinit var licenseCoordinator: LicenseCoordinator
 
     private var activeInfoNeedsCaptcha = false
+    private var expireNextCourseFetch = false
+    private var expireNextActivitiesFetch = false
+    private var expireNextDetailFetch = false
 
     private val dummyScanner = object : BarcodeScanner {
         override suspend fun scanImageUri(uri: Uri): AppResult<List<BarcodeScanResult>> = AppResult.Success(emptyList())
@@ -382,15 +386,90 @@ class ChaoxingViewModelsTest {
             assertEquals(ChaoxingUserSignStatus.SIGNED, loaded.activities[2].userStatus)
         }
 
+    @Test
+    fun `courses activities and sign detail transparently repair expired session via stored credentials`() = runTest {
+        licenseEngine.setUnlocked(LicenseTier.STANDARD, maxSubAccounts = 1)
+        val bound = accountManager.bindWithPassword("13800138000", "secret_pwd")
+        assertTrue(bound is AccountBindResult.Bound)
+        val accountId = (bound as AccountBindResult.Bound).account.accountId
+
+        // 1. 课程刷新首次遇到会话过期，自动重连并重试成功
+        expireNextCourseFetch = true
+        val refreshedCourses = accountManager.refreshCourses(accountId)
+        assertTrue("课程刷新应透明修复过期会话，实际: $refreshedCourses", refreshedCourses is AppResult.Success)
+        assertEquals(ChaoxingAccountManager.SESSION_ACTIVE, database.accountDao().getById(accountId)?.sessionStatus)
+
+        // 2. 活动列表首次遇到 302 登录重定向，自动重连并加载成功，无红色报错横幅
+        expireNextActivitiesFetch = true
+        val activitiesVm = ChaoxingActivitiesViewModel(
+            route = ChaoxingNavKey.CourseActivities(
+                accountId = accountId,
+                courseId = 2001L,
+                clazzId = 1001L,
+                cpi = 3001L,
+                courseName = "面向对象程序设计（Java）",
+            ),
+            accountDao = database.accountDao(),
+            remoteDataSource = remote,
+            timeProvider = TimeProvider { FIXED_NOW_MS },
+            sessionBridge = accountManager,
+        )
+        val loadedActivities = activitiesVm.uiState.first { !it.isLoading && it.activities.isNotEmpty() }
+        assertEquals(null, loadedActivities.errorMessage)
+        assertEquals(3, loadedActivities.activities.size)
+
+        // 3. 签到详情首次遇到 302 登录重定向，自动重连并拉取详情成功
+        expireNextDetailFetch = true
+        val detailVm = ChaoxingSignExecutionViewModel(
+            route = ChaoxingNavKey.SignExecution(accountId, 2001L, 1001L, 7002L),
+            accountDao = database.accountDao(),
+            presetLocationDao = database.presetLocationDao(),
+            remoteDataSource = remote,
+            signCoordinator = signCoordinator,
+            licenseCoordinator = licenseCoordinator,
+            barcodeScanner = dummyScanner,
+            locationService = FakeLocationService(),
+            timeProvider = TimeProvider { FIXED_NOW_MS },
+            sessionBridge = accountManager,
+        )
+        val loadedDetail = detailVm.uiState.first { !it.isLoadingDetail && it.detail != null }
+        assertEquals(null, loadedDetail.loadError)
+        assertEquals(7002L, loadedDetail.detail?.activeId)
+    }
+
     private fun configureServer() {
         var nextUid = 9001L
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when {
                 request.target.startsWith("/fanyalogin") -> mockFanyaLoginResponse(nextUid)
                 request.target.startsWith("/apis/login/userLogin4Uname.do") -> mockUserLoginResponse(nextUid++)
-                request.target.startsWith("/mycourse/backclazzdata") -> mockCourseListResponse()
-                request.target.startsWith("/v2/apis/active/getPPTActiveInfo") -> mockActiveInfoResponse(request)
-                request.target.startsWith("/v2/apis/active/student/activelist") -> mockActiveListResponse()
+                request.target.startsWith("/mycourse/backclazzdata") -> {
+                    if (expireNextCourseFetch) {
+                        expireNextCourseFetch = false
+                        MockResponse.Builder()
+                            .code(HTTP_OK)
+                            .body("""{"result":0,"msg":"请重新登录","errorMsg":"请重新登录"}""")
+                            .build()
+                    } else {
+                        mockCourseListResponse()
+                    }
+                }
+                request.target.startsWith("/v2/apis/active/getPPTActiveInfo") -> {
+                    if (expireNextDetailFetch) {
+                        expireNextDetailFetch = false
+                        mockPassportRedirect()
+                    } else {
+                        mockActiveInfoResponse(request)
+                    }
+                }
+                request.target.startsWith("/v2/apis/active/student/activelist") -> {
+                    if (expireNextActivitiesFetch) {
+                        expireNextActivitiesFetch = false
+                        mockPassportRedirect()
+                    } else {
+                        mockActiveListResponse()
+                    }
+                }
                 request.target.startsWith("/v2/apis/sign/getAttendInfo") -> mockAttendInfoResponse(request)
                 request.target.startsWith("/newsign/preSign") ->
                     MockResponse.Builder().code(HTTP_OK).body("<div class='zhuangtai'>进行中</div>").build()
@@ -400,6 +479,12 @@ class ChaoxingViewModelsTest {
             }
         }
     }
+
+    private fun mockPassportRedirect(): MockResponse = MockResponse.Builder()
+        .code(HTTP_FOUND)
+        .addHeader("Location", "https://passport2.chaoxing.com/mlogin?newversion=true")
+        .body("")
+        .build()
 
     private fun mockFanyaLoginResponse(uid: Long): MockResponse = MockResponse.Builder()
         .code(HTTP_OK)
@@ -580,6 +665,7 @@ class ChaoxingViewModelsTest {
 
     companion object {
         private const val HTTP_OK = 200
+        private const val HTTP_FOUND = 302
         private const val FIXED_NOW_MS = 1_700_000_000_000L
         private const val CAPACITY = 20
         private const val PERIOD_MS = 1000L

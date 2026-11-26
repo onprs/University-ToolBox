@@ -8,6 +8,7 @@ import dagger.assisted.AssistedFactory
 import dagger.assisted.AssistedInject
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.onprs.universitytoolbox.core.common.result.AppResult
+import io.github.onprs.universitytoolbox.core.common.result.DomainError
 import io.github.onprs.universitytoolbox.core.common.time.TimeProvider
 import io.github.onprs.universitytoolbox.core.license.api.LicenseCoordinator
 import io.github.onprs.universitytoolbox.core.scanner.BarcodeScanner
@@ -19,7 +20,10 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.Chaoxi
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.local.InMemoryChaoxingDeviceSettingsRepository
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingQrParser
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingRemoteDataSource
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.ChaoxingAccountManager
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.ChaoxingAccountSessionBridge
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.MultiAccountSignCoordinator
+import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.coordinator.NoOpChaoxingAccountSessionBridge
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.ChaoxingLocationService
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.CoordinateConverter
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.location.GeoPoint
@@ -49,6 +53,7 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
     private val locationService: ChaoxingLocationService,
     private val timeProvider: TimeProvider,
     private val deviceSettingsRepository: ChaoxingDeviceSettingsRepository,
+    private val sessionBridge: ChaoxingAccountSessionBridge,
 ) : ViewModel() {
     @Suppress("LongParameterList")
     constructor(
@@ -61,6 +66,7 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
         barcodeScanner: BarcodeScanner,
         locationService: ChaoxingLocationService,
         timeProvider: TimeProvider,
+        sessionBridge: ChaoxingAccountSessionBridge = NoOpChaoxingAccountSessionBridge,
     ) : this(
         route = route,
         accountDao = accountDao,
@@ -72,6 +78,7 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
         locationService = locationService,
         timeProvider = timeProvider,
         deviceSettingsRepository = InMemoryChaoxingDeviceSettingsRepository(),
+        sessionBridge = sessionBridge,
     )
 
     private val mutableUiState = MutableStateFlow(
@@ -129,7 +136,16 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
             mutableUiState.update { it.copy(isLoadingDetail = true, loadError = null) }
             val accounts = accountDao.getAll().filter { it.isEnabled }
             val maxSub = licenseCoordinator.maxSubAccounts()
-            when (val detailRes = remoteDataSource.fetchActiveDetail(route.accountId, route.activeId)) {
+            val firstRes = remoteDataSource.fetchActiveDetail(route.accountId, route.activeId)
+            val detailRes = if (firstRes is AppResult.Failure &&
+                firstRes.error is DomainError.Unauthorized &&
+                sessionBridge.repairSessionIfPossible(route.accountId)
+            ) {
+                remoteDataSource.fetchActiveDetail(route.accountId, route.activeId)
+            } else {
+                firstRes
+            }
+            when (detailRes) {
                 is AppResult.Success -> {
                     val detail = detailRes.data
                     val initialLat = detail.targetLatitude?.let(CoordinateConverter::formatCoordinate).orEmpty()
@@ -147,13 +163,22 @@ class ChaoxingSignExecutionViewModel @AssistedInject constructor(
                     }
                 }
 
-                is AppResult.Failure -> mutableUiState.update {
-                    it.copy(
-                        isLoadingDetail = false,
-                        loadError = detailRes.error.message,
-                        availableAccounts = accounts,
-                        maxSubAccountsQuota = maxSub,
-                    )
+                is AppResult.Failure -> {
+                    if (detailRes.error is DomainError.Unauthorized) {
+                        accountDao.updateSessionStatus(
+                            route.accountId,
+                            ChaoxingAccountManager.SESSION_EXPIRED,
+                            timeProvider.currentTimeMillis(),
+                        )
+                    }
+                    mutableUiState.update {
+                        it.copy(
+                            isLoadingDetail = false,
+                            loadError = detailRes.error.message,
+                            availableAccounts = accounts,
+                            maxSubAccountsQuota = maxSub,
+                        )
+                    }
                 }
             }
         }

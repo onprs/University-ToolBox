@@ -76,20 +76,16 @@ class ChaoxingHttpExecutor @Inject constructor(@param:ChaoxingHttpClient private
         }
     }
 
-    /** 判断非自动重定向响应是否指向超星登录页（会话失效特征）。 */
-    internal fun isSessionExpiredRedirect(response: HttpTextResponse): Boolean {
-        if (response.code !in HTTP_REDIRECT_MIN..HTTP_REDIRECT_MAX) {
-            return false
+    /** 判断响应是否为登录重定向或返回了统一认证中心登录页 HTML（会话失效特征）。 */
+    internal fun isSessionExpiredResponse(response: HttpTextResponse): Boolean {
+        if (response.code in HTTP_REDIRECT_MIN..HTTP_REDIRECT_MAX) {
+            val location = response.locationHeader.orEmpty()
+            return location.contains("passport2", ignoreCase = true) ||
+                location.contains("mlogin", ignoreCase = true) ||
+                location.contains("/login", ignoreCase = true)
         }
-        val location = response.locationHeader.orEmpty()
-        return location.contains("passport2", ignoreCase = true) ||
-            location.contains("mlogin", ignoreCase = true) ||
-            location.contains("/login", ignoreCase = true)
+        return ChaoxingSafeJson.looksLikeLoginHtml(response.body)
     }
-
-    /** 使用宽容 JSON 解码器解析响应体，解析失败返回 null。 */
-    internal inline fun <reified T> decodeJson(raw: String): T? =
-        runCatching { ChaoxingJson.codec.decodeFromString<T>(raw.trim()) }.getOrNull()
 
     private suspend fun executeCall(request: Request): Response {
         val call = httpClient.newCall(request)

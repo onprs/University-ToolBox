@@ -1,13 +1,13 @@
 package io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session
 
 import io.github.onprs.universitytoolbox.core.common.time.TimeProvider
-import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingJson
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import okhttp3.Cookie
 import okhttp3.HttpUrl
 
@@ -213,13 +213,18 @@ class AccountCookieVault(
 
     private fun mutexFor(accountId: String): Mutex = accountMutexes.computeIfAbsent(accountId) { Mutex() }
 
+    private val cookieJson = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+
     private suspend fun ensureLoadedLocked(accountId: String): LinkedHashMap<CookieKey, StoredCookie> {
         cache[accountId]?.let { return it }
         val serialized = storage.readSerializedCookies(accountId)
         val map = LinkedHashMap<CookieKey, StoredCookie>()
         if (!serialized.isNullOrBlank()) {
             val decoded = runCatching {
-                ChaoxingJson.codec.decodeFromString<List<StoredCookie>>(serialized)
+                cookieJson.decodeFromString<List<StoredCookie>>(serialized)
             }.getOrDefault(emptyList())
             decoded.forEach { cookie ->
                 map[CookieKey(cookie.name, cookie.domain, cookie.path)] = cookie
@@ -233,7 +238,7 @@ class AccountCookieVault(
         if (bucket.isEmpty()) {
             storage.deleteCookies(accountId)
         } else {
-            val encoded = ChaoxingJson.codec.encodeToString(bucket.values.toList())
+            val encoded = cookieJson.encodeToString(bucket.values.toList())
             storage.writeSerializedCookies(accountId, encoded)
         }
     }

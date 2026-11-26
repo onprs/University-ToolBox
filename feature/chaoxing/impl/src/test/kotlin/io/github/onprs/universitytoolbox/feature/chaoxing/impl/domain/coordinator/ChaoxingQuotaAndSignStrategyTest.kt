@@ -275,6 +275,65 @@ class ChaoxingQuotaAndSignStrategyTest {
     }
 
     @Test
+    fun `requires and submits location coordinates for signCode and signOut when ifopenAddress enabled`() = runTest {
+        val identity = SignAccountIdentity(
+            accountId = "cx_9001",
+            uid = "9001",
+            fid = "100",
+            maskedAccount = "138****0001",
+            displayName = "同学甲",
+        )
+        val baseReq = SignExecutionRequest(courseId = 2001L, clazzId = 1001L, activeId = 7001L)
+
+        // 签到码（otherId = 5）叠加位置范围校验（ifopenAddress = 1）：必须同时要求并携带签到码与经纬度
+        currentActiveInfoJson = activeInfoJson(otherId = 5, ifPhoto = 0, needVcode = 0, ifOpenAddress = 1)
+        val missingCodeFirst = signDispatcher.dispatch(identity, baseReq)
+        assertEquals(
+            SignExecutionResult.RequiresExtraInput(SignMissingField.SIGN_CODE, "请输入教师公布的签到码"),
+            missingCodeFirst,
+        )
+        val missingLocationSecond = signDispatcher.dispatch(identity, baseReq.copy(signCode = "6789"))
+        assertEquals(
+            SignExecutionResult.RequiresExtraInput(
+                SignMissingField.LOCATION_COORDINATE,
+                "该签到开启了位置范围校验，请先选择签到地点",
+            ),
+            missingLocationSecond,
+        )
+        recordedRequests.clear()
+        val codeWithLocOk = signDispatcher.dispatch(
+            identity,
+            baseReq.copy(signCode = "6789", latitude = 36.007, longitude = 120.128, address = "J7教学楼"),
+        )
+        assertTrue(codeWithLocOk is SignExecutionResult.Success)
+        assertTrue(recordedRequests.any { it.contains("signCode=6789") && it.contains("ifTiJiao=1") })
+
+        // 签退（activeType = 74）叠加位置范围校验（ifopenAddress = 1）：必须校验并提交经纬度
+        currentActiveInfoJson = activeInfoJson(
+            activeType = 74,
+            otherId = 0,
+            ifPhoto = 0,
+            needVcode = 0,
+            ifOpenAddress = 1,
+        )
+        val signOutMissingLoc = signDispatcher.dispatch(identity, baseReq)
+        assertEquals(
+            SignExecutionResult.RequiresExtraInput(
+                SignMissingField.LOCATION_COORDINATE,
+                "该活动开启了位置范围校验，请先选择签到地点",
+            ),
+            signOutMissingLoc,
+        )
+        recordedRequests.clear()
+        val signOutWithLocOk = signDispatcher.dispatch(
+            identity,
+            baseReq.copy(latitude = 36.007, longitude = 120.128, address = "J7教学楼"),
+        )
+        assertTrue(signOutWithLocOk is SignExecutionResult.Success)
+        assertTrue(recordedRequests.any { it.contains("latitude=36.007") && it.contains("ifTiJiao=1") })
+    }
+
+    @Test
     fun `batch coordinator records outcomes and enforces downgraded subaccount quota`() = runTest {
         licenseEngine.setUnlocked(LicenseTier.STANDARD, maxSubAccounts = 1)
         database.accountDao().upsert(sampleDbAccount("cx_1", isPrimary = true))
@@ -420,7 +479,13 @@ class ChaoxingQuotaAndSignStrategyTest {
         return MockResponse.Builder().code(HTTP_OK).body(payload).build()
     }
 
-    private fun activeInfoJson(activeType: Int = 2, otherId: Int, ifPhoto: Int, needVcode: Int): String = """
+    private fun activeInfoJson(
+        activeType: Int = 2,
+        otherId: Int,
+        ifPhoto: Int,
+        needVcode: Int,
+        ifOpenAddress: Int = if (otherId == 4) 1 else 0,
+    ): String = """
         {
           "result": 1,
           "msg": "success",
@@ -433,7 +498,7 @@ class ChaoxingQuotaAndSignStrategyTest {
             "status": 1,
             "ifphoto": $ifPhoto,
             "ifNeedVCode": $needVcode,
-            "ifopenAddress": ${if (otherId == 4) 1 else 0},
+            "ifopenAddress": $ifOpenAddress,
             "starttime": 1700000000000
           }
         }

@@ -25,7 +25,6 @@ import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.Chaox
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingQrLoginSession
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingQrLoginStatus
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingRemoteDataSource
-import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.remote.ChaoxingUserSignStatus
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.data.session.AccountCookieVault
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.device.ChaoxingDeviceIdentityHelper
 import io.github.onprs.universitytoolbox.feature.chaoxing.impl.domain.device.ChaoxingSharedAccountCodec
@@ -90,6 +89,8 @@ private class PendingLoginContext(
 )
 
 private data class StoredLoginCredentials(val rawLogin: String, val plainPassword: String, val loginFid: String)
+
+private data class ProbedIdentityCandidate(val entity: ChaoxingAccountEntity, val foundServerDeviceCode: Boolean)
 
 /**
  * 多账号签到协调器调用的账号会话修复与设备码维护桥接契约。
@@ -310,11 +311,15 @@ class ChaoxingAccountManager @Inject constructor(
                 fid = targetFid,
                 customUserAgent = customUa,
             )
-            val ok = loginRes is AppResult.Success && loginRes.data is ChaoxingLoginOutcome.Authenticated
-            if (!ok) {
+            val authenticated = (loginRes as? AppResult.Success)?.data as? ChaoxingLoginOutcome.Authenticated
+            if (authenticated != null) {
+                if (authenticated.accountId != accountId) {
+                    cookieVault.migrateAccountSession(authenticated.accountId, accountId)
+                }
+            } else {
                 cookieVault.clearAccount(provisionalId)
             }
-            return ok
+            return authenticated != null
         }
 
         val recovered = attemptLogin(creds.loginFid) ||
@@ -432,9 +437,17 @@ class ChaoxingAccountManager @Inject constructor(
         }
     }
 
-    /** 刷新指定账号的在线课程缓存并更新会话健康状态。 */
+    /** 刷新指定账号的在线课程缓存并更新会话健康状态；会话过期且存有凭据时自动静默重连重试一次。 */
     suspend fun refreshCourses(accountId: String): AppResult<List<ChaoxingCourse>> {
-        val coursesRes = remoteDataSource.fetchCourses(accountId)
+        val firstRes = remoteDataSource.fetchCourses(accountId)
+        val coursesRes = if (firstRes is AppResult.Failure &&
+            firstRes.error is DomainError.Unauthorized &&
+            repairSessionIfPossible(accountId)
+        ) {
+            remoteDataSource.fetchCourses(accountId)
+        } else {
+            firstRes
+        }
         val nowMs = timeProvider.currentTimeMillis()
         when (coursesRes) {
             is AppResult.Success -> {
@@ -594,7 +607,7 @@ class ChaoxingAccountManager @Inject constructor(
         accountDao.upsert(initialEntity)
 
         val finalEntity = if (context.sharedPayload?.deviceCode.isNullOrBlank()) {
-            tryProbeHistoricalDeviceCode(initialEntity)
+            ChaoxingHistoricalDeviceProber.probeAndPersist(initialEntity, remoteDataSource, accountDao)
         } else {
             initialEntity
         }
@@ -666,50 +679,6 @@ class ChaoxingAccountManager @Inject constructor(
         )
     }
 
-    private suspend fun tryProbeHistoricalDeviceCode(entity: ChaoxingAccountEntity): ChaoxingAccountEntity {
-        val courses = (remoteDataSource.fetchCourses(entity.accountId) as? AppResult.Success)
-            ?.data
-            ?.filterNot { it.isArchived }
-            ?.take(MAX_PROBE_COURSES)
-            .orEmpty()
-        for (course in courses) {
-            val activities = (
-                remoteDataSource.fetchActivities(
-                    accountId = entity.accountId,
-                    fid = entity.fid,
-                    courseId = course.courseId,
-                    clazzId = course.clazzId,
-                    cpi = course.cpi,
-                ) as? AppResult.Success
-                )?.data.orEmpty()
-            val signed = activities.firstOrNull {
-                it.userStatus == ChaoxingUserSignStatus.SIGNED ||
-                    it.userStatus == ChaoxingUserSignStatus.LATE ||
-                    it.userStatus == ChaoxingUserSignStatus.TEACHER_SIGNED
-            }
-            val record = signed?.let { remoteDataSource.fetchSignRecordDeviceInfo(entity.accountId, it.activeId) }
-            if (record != null) {
-                val (parsedModel, parsedUid) = ChaoxingDeviceIdentityHelper.parseUserAgentIdentity(record.second)
-                val updatedUid = parsedUid ?: entity.clientUniqueId
-                val updatedModel = parsedModel ?: entity.deviceModel
-                accountDao.updateDeviceIdentity(
-                    accountId = entity.accountId,
-                    deviceCode = record.first,
-                    isUnified = true,
-                    uniqueId = updatedUid,
-                    deviceModel = updatedModel,
-                )
-                return entity.copy(
-                    deviceCode = record.first,
-                    isUnifiedDeviceCode = true,
-                    clientUniqueId = updatedUid,
-                    deviceModel = updatedModel,
-                )
-            }
-        }
-        return entity
-    }
-
     private suspend fun decryptStoredCredentials(account: ChaoxingAccountEntity): StoredLoginCredentials? {
         val loginCipher = account.encryptedAccountInputCiphertext?.takeIf { it.isNotBlank() } ?: return null
         val pwdCipher = account.encryptedPasswordCiphertext?.takeIf { it.isNotBlank() } ?: return null
@@ -739,6 +708,100 @@ class ChaoxingAccountManager @Inject constructor(
     companion object {
         const val SESSION_ACTIVE = "ACTIVE"
         const val SESSION_EXPIRED = "EXPIRED"
-        private const val MAX_PROBE_COURSES = 2
+    }
+}
+
+private object ChaoxingHistoricalDeviceProber {
+    private const val MAX_PROBE_COURSES = 2
+    private const val MAX_PROBE_ACTIVITIES_PER_COURSE = 3
+
+    suspend fun probeAndPersist(
+        entity: ChaoxingAccountEntity,
+        remoteDataSource: ChaoxingRemoteDataSource,
+        accountDao: ChaoxingAccountDao,
+    ): ChaoxingAccountEntity {
+        val courses = (remoteDataSource.fetchCourses(entity.accountId) as? AppResult.Success)
+            ?.data
+            ?.filterNot { it.isArchived }
+            ?.take(MAX_PROBE_COURSES)
+            .orEmpty()
+        var fallbackUaIdentity: ChaoxingAccountEntity? = null
+        for (course in courses) {
+            val probed = probeCourse(entity, course, fallbackUaIdentity, remoteDataSource)
+            if (probed != null) {
+                if (probed.foundServerDeviceCode) {
+                    persist(accountDao, probed.entity)
+                    return probed.entity
+                }
+                if (fallbackUaIdentity == null) {
+                    fallbackUaIdentity = probed.entity
+                }
+            }
+        }
+        if (fallbackUaIdentity != null) {
+            persist(accountDao, fallbackUaIdentity)
+            return fallbackUaIdentity
+        }
+        return entity
+    }
+
+    private suspend fun probeCourse(
+        entity: ChaoxingAccountEntity,
+        course: ChaoxingCourse,
+        currentFallback: ChaoxingAccountEntity?,
+        remoteDataSource: ChaoxingRemoteDataSource,
+    ): ProbedIdentityCandidate? {
+        val activities = (
+            remoteDataSource.fetchActivities(
+                accountId = entity.accountId,
+                fid = entity.fid,
+                courseId = course.courseId,
+                clazzId = course.clazzId,
+                cpi = course.cpi,
+            ) as? AppResult.Success
+            )?.data.orEmpty()
+        val signedItems = activities.filter { it.userStatus.isSignedSuccess }.take(MAX_PROBE_ACTIVITIES_PER_COURSE)
+        var uaCandidate: ProbedIdentityCandidate? = null
+        for (signed in signedItems) {
+            val record = remoteDataSource.fetchSignRecordDeviceInfo(entity.accountId, signed.activeId)
+            if (record != null) {
+                val (parsedModel, parsedUid) = ChaoxingDeviceIdentityHelper.parseUserAgentIdentity(record.second)
+                val base = uaCandidate?.entity ?: currentFallback ?: entity
+                val updatedUid = parsedUid ?: base.clientUniqueId
+                val updatedModel = parsedModel ?: base.deviceModel
+                val probedCode = record.first
+                if (!probedCode.isNullOrBlank()) {
+                    return ProbedIdentityCandidate(
+                        entity = entity.copy(
+                            deviceCode = probedCode,
+                            isUnifiedDeviceCode = true,
+                            clientUniqueId = updatedUid,
+                            deviceModel = updatedModel,
+                        ),
+                        foundServerDeviceCode = true,
+                    )
+                }
+                if (uaCandidate == null && (parsedModel != null || parsedUid != null)) {
+                    uaCandidate = ProbedIdentityCandidate(
+                        entity = entity.copy(
+                            clientUniqueId = updatedUid,
+                            deviceModel = updatedModel,
+                        ),
+                        foundServerDeviceCode = false,
+                    )
+                }
+            }
+        }
+        return uaCandidate
+    }
+
+    private suspend fun persist(accountDao: ChaoxingAccountDao, probed: ChaoxingAccountEntity) {
+        accountDao.updateDeviceIdentity(
+            accountId = probed.accountId,
+            deviceCode = probed.deviceCode,
+            isUnified = probed.isUnifiedDeviceCode,
+            uniqueId = probed.clientUniqueId,
+            deviceModel = probed.deviceModel,
+        )
     }
 }

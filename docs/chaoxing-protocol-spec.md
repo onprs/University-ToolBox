@@ -438,6 +438,7 @@
     - `0`：未签（若活动 `status == 2` 已结束且 `data.id == null`，表示逾期未签）
     - `1`：已签
     - `2`：代签（教师代签）
+    - `3`：补签（见官方 `ended_74` 模板 `Makeupcheck` 分支）
     - `4`：请假
     - `5`：缺勤（部分学校展示为旷课）
     - `7`：病假
@@ -446,7 +447,7 @@
     - `10`：早退
     - `11`：签到已过期
     - `12`：公假（见 `pc/util.js` `dealSignStatus` 与 `newsign/preSign` 颜色分支）
-  - `startTime` / `endTime`：13 位毫秒级 Unix 时间戳；`nameOne` 为活动标题；`nameFour` 为展示时间串（如 `"11-24 10:12"`）。
+  - `startTime` / `endTime`：**多态类型注意**——已结束或已设定时间时返回 13 位毫秒级 Unix 整数时间戳，进行中且未设截止时间的新活动返回空字符串 `""`（`"endTime": ""`），未开始的定时活动返回 `"startTime": ""`；反序列化层须同时兼容整数、`null` 与空字符串；`nameOne` 为活动标题；`nameFour` 为展示时间串（进行中可能为 `""`）。
 - **未登录 / 会话失效响应（实测）**：
   - HTTP `302` 重定向至 `https://passport2.chaoxing.com/mlogin?newversion=true&refer=...`（HTTP 客户端若自动跟随重定向会得到 HTML 登录页而非 JSON，建议禁用自动重定向或识别重定向目标为 `passport2.chaoxing.com`）。
 
@@ -524,7 +525,7 @@
   ```
 - **核心判定字段解析**：
   - **是否为拍照签到**：`otherId == 0 && ifphoto == 1`（或签退 `activeType == 74 && ifphoto == 1`）。
-  - **是否为指定位置签到**：`otherId == 4` 或 `ifopenAddress == 1`。服务端同时定义百度坐标系字段（`latitude`/`longitude`/`locationLatitude`/`locationLongitude`，页面加载百度地图 `api.map.baidu.com`）与高德坐标系后缀字段（`locationLatitude_gd`/`locationLongitude_gd`）；`locationRange` 为允许半径（米，如 `"100"`），`locationText` 为指定地点文本。
+  - **是否开启位置范围校验**：`otherId == 4`（纯位置签到），或二维码（`otherId == 2`）、手势（`otherId == 3`）、签到码（`otherId == 5`）及签退（`activeType == 74`）叠加 `ifopenAddress == 1`（部分模板将该标记置于嵌套 JSON 字符串字段 `content` 内）。服务端同时定义百度坐标系字段（`latitude`/`longitude`/`locationLatitude`/`locationLongitude`，页面加载百度地图 `api.map.baidu.com`）与高德坐标系后缀字段（`locationLatitude_gd`/`locationLongitude_gd`）；`locationRange` 为允许半径（米，如 `"100"` 或 `"100.0"`），`locationText` 为指定地点文本。
   - **是否开启二维码动态刷新**：`otherId == 2` 时，`ifrefreshewm == 1` 表示动态刷新二维码，`ewmRefreshTime` 为刷新周期。
   - **是否需要行为验证码**：`ifNeedVCode == 1`（或 `showVCode == 1`）。
   - **防作弊与扩展校验标记**：`openPreventCheatFlag`（防作弊开关）、`openCheckFaceFlag`（人脸识别校验开关）、`openCheckWeChatFlag`（微信校验开关）。

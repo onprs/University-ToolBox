@@ -73,10 +73,10 @@ class ChaoxingRemoteDataSource @Inject constructor(
                 is AppResult.Success -> result.data
                 is AppResult.Failure -> return@withContext result
             }
-            if (executor.isSessionExpiredRedirect(response)) {
+            if (executor.isSessionExpiredResponse(response)) {
                 return@withContext AppResult.Failure(DomainError.Unauthorized("登录会话已过期，请重新登录"))
             }
-            val dto = executor.decodeJson<BackClazzDataResponseDto>(response.body)
+            val dto = ChaoxingProtocolParsers.parseBackClazzData(response.body)
             if (dto != null) {
                 if (dto.result == 0 || dto.status == false) {
                     val message = dto.errorMsg ?: dto.msg ?: "请重新登录"
@@ -90,7 +90,7 @@ class ChaoxingRemoteDataSource @Inject constructor(
         }
     }
 
-    /** 拉取课程下的活动列表，并自动识别 302 登录重定向。 */
+    /** 拉取课程下的活动列表，并自动识别 302 登录重定向与字段多态。 */
     suspend fun fetchActivities(
         accountId: String,
         fid: String,
@@ -118,11 +118,11 @@ class ChaoxingRemoteDataSource @Inject constructor(
             is AppResult.Success -> result.data
             is AppResult.Failure -> return@withContext result
         }
-        if (executor.isSessionExpiredRedirect(response)) {
+        if (executor.isSessionExpiredResponse(response)) {
             return@withContext AppResult.Failure(DomainError.Unauthorized("会话已过期，请重新登录"))
         }
 
-        val dto = executor.decodeJson<ActiveListResponseDto>(response.body)
+        val dto = ChaoxingProtocolParsers.parseActiveList(response.body)
             ?: return@withContext AppResult.Failure(DomainError.Network("活动列表响应解析失败"))
 
         if (dto.result != 1) {
@@ -158,15 +158,19 @@ class ChaoxingRemoteDataSource @Inject constructor(
                 is AppResult.Success -> result.data
                 is AppResult.Failure -> return@withContext result
             }
-            if (executor.isSessionExpiredRedirect(response)) {
+            if (executor.isSessionExpiredResponse(response)) {
                 return@withContext AppResult.Failure(DomainError.Unauthorized("会话已过期，请重新登录"))
             }
-            val dto = executor.decodeJson<AttendInfoResponseDto>(response.body)
+            val dto = ChaoxingProtocolParsers.parseAttendInfo(response.body)
                 ?: return@withContext AppResult.Failure(DomainError.Network("考勤状态解析失败"))
             val data = dto.data
             if (dto.result != 1 || data == null) {
                 val err = dto.errorMsg ?: dto.msg ?: "获取考勤状态失败"
-                return@withContext AppResult.Failure(DomainError.Network(err, httpCode = response.code))
+                return@withContext if (err.contains("登录")) {
+                    AppResult.Failure(DomainError.Unauthorized(err))
+                } else {
+                    AppResult.Failure(DomainError.Network(err, httpCode = response.code))
+                }
             }
             AppResult.Success(ChaoxingDomainMapper.toAttendRecord(data, fallbackActiveId = activeId))
         }
@@ -191,8 +195,10 @@ class ChaoxingRemoteDataSource @Inject constructor(
                 } else {
                     async {
                         val resolved = semaphore.withPermit {
-                            val attendRes = fetchSignAttendRecord(accountId, activity.activeId)
-                            (attendRes as? AppResult.Success)?.data?.userStatus
+                            runCatching {
+                                val attendRes = fetchSignAttendRecord(accountId, activity.activeId)
+                                (attendRes as? AppResult.Success)?.data?.userStatus
+                            }.getOrNull()
                         }
                         if (resolved != null) {
                             if (activity.activityStatus == ChaoxingActivityStatus.ENDED &&
@@ -228,11 +234,11 @@ class ChaoxingRemoteDataSource @Inject constructor(
                 is AppResult.Success -> result.data
                 is AppResult.Failure -> return@withContext result
             }
-            if (executor.isSessionExpiredRedirect(response)) {
+            if (executor.isSessionExpiredResponse(response)) {
                 return@withContext AppResult.Failure(DomainError.Unauthorized("会话已过期，请重新登录"))
             }
 
-            val dto = executor.decodeJson<PptActiveInfoResponseDto>(response.body)
+            val dto = ChaoxingProtocolParsers.parsePptActiveInfo(response.body)
                 ?: return@withContext AppResult.Failure(DomainError.Network("签到详情解析失败"))
 
             if (dto.result != 1 || dto.data == null) {
@@ -279,7 +285,7 @@ class ChaoxingRemoteDataSource @Inject constructor(
             is AppResult.Success -> result.data
             is AppResult.Failure -> return@withContext result
         }
-        if (executor.isSessionExpiredRedirect(response)) {
+        if (executor.isSessionExpiredResponse(response)) {
             return@withContext AppResult.Failure(DomainError.Unauthorized("会话已过期，请重新登录"))
         }
         AppResult.Success(htmlParser.parsePreSignHtml(response.body))
@@ -302,10 +308,10 @@ class ChaoxingRemoteDataSource @Inject constructor(
                 is AppResult.Success -> result.data
                 is AppResult.Failure -> return@withContext result
             }
-            if (executor.isSessionExpiredRedirect(response)) {
+            if (executor.isSessionExpiredResponse(response)) {
                 return@withContext AppResult.Failure(DomainError.Unauthorized("会话已过期，请重新登录"))
             }
-            val dto = executor.decodeJson<CheckSignCodeResponseDto>(response.body)
+            val dto = ChaoxingProtocolParsers.parseCheckSignCode(response.body)
                 ?: return@withContext AppResult.Failure(DomainError.Network("签到码校验响应解析失败"))
             AppResult.Success(dto.result == 1)
         }
@@ -324,12 +330,17 @@ class ChaoxingRemoteDataSource @Inject constructor(
             is AppResult.Success -> result.data
             is AppResult.Failure -> return@withContext result
         }
-        val dto = executor.decodeJson<PanUserValidResponseDto>(response.body)
+        if (executor.isSessionExpiredResponse(response)) {
+            return@withContext AppResult.Failure(DomainError.Unauthorized("会话已过期，请重新登录"))
+        }
+        val dto = ChaoxingProtocolParsers.parsePanUserValid(response.body)
             ?: return@withContext AppResult.Failure(DomainError.Network("云盘令牌响应解析失败"))
 
         val token = dto.token
         if (!dto.result || token.isNullOrBlank()) {
-            val isUnauthorized = dto.newCode == PAN_AUTH_EXPIRED_NEW_CODE || dto.code == PAN_AUTH_EXPIRED_CODE
+            val isUnauthorized = dto.newCode == PAN_AUTH_EXPIRED_NEW_CODE ||
+                dto.code == PAN_AUTH_EXPIRED_CODE ||
+                dto.code == PAN_AUTH_FORBIDDEN_CODE
             val errMsg = dto.msg.orEmpty().ifBlank { "获取云盘上传令牌失败" }
             return@withContext if (isUnauthorized) {
                 AppResult.Failure(DomainError.Unauthorized(errMsg))
@@ -379,7 +390,10 @@ class ChaoxingRemoteDataSource @Inject constructor(
             is AppResult.Success -> result.data
             is AppResult.Failure -> return@withContext result
         }
-        val dto = executor.decodeJson<PanUploadResponseDto>(response.body)
+        if (executor.isSessionExpiredResponse(response)) {
+            return@withContext AppResult.Failure(DomainError.Unauthorized("会话已过期，请重新登录"))
+        }
+        val dto = ChaoxingProtocolParsers.parsePanUpload(response.body)
             ?: return@withContext AppResult.Failure(DomainError.Network("照片上传响应解析失败"))
 
         val objectId = dto.objectId ?: dto.data?.objectId
@@ -425,7 +439,7 @@ class ChaoxingRemoteDataSource @Inject constructor(
                 is AppResult.Success -> result.data
                 is AppResult.Failure -> return@withContext result
             }
-            if (executor.isSessionExpiredRedirect(response)) {
+            if (executor.isSessionExpiredResponse(response)) {
                 return@withContext AppResult.Failure(DomainError.Unauthorized("会话已过期，请重新登录"))
             }
             val parsedOutcome = ChaoxingSignResponseParser.parse(response.body)
@@ -438,14 +452,18 @@ class ChaoxingRemoteDataSource @Inject constructor(
         }
     }
 
-    /** 只读查询已签活动在服务端记录的真实设备码与客户端 UA，用于同步统一设备码。 */
-    suspend fun fetchSignRecordDeviceInfo(accountId: String, activeId: Long): Pair<String, String?>? {
+    /** 只读查询已签活动在服务端记录的真实设备码与客户端 UA，用于同步统一设备码与客户端指纹。 */
+    suspend fun fetchSignRecordDeviceInfo(accountId: String, activeId: Long): Pair<String?, String?>? {
         val record = (fetchSignAttendRecord(accountId, activeId) as? AppResult.Success)?.data ?: return null
-        val isSignedRecord = record.userStatus == ChaoxingUserSignStatus.SIGNED ||
-            record.userStatus == ChaoxingUserSignStatus.LATE ||
-            record.userStatus == ChaoxingUserSignStatus.TEACHER_SIGNED
-        val deviceCode = record.deviceCode?.takeIf { isSignedRecord && it.isNotBlank() } ?: return null
-        return deviceCode to record.userAgent
+        if (!record.userStatus.isSignedSuccess) {
+            return null
+        }
+        val deviceCode = record.deviceCode?.takeIf { it.isNotBlank() }
+        val userAgent = record.userAgent?.takeIf { it.isNotBlank() }
+        if (deviceCode == null && userAgent == null) {
+            return null
+        }
+        return deviceCode to userAgent
     }
 
     /** 解析课堂签到二维码内容；若为跳转短链且缺 `enc` 则追踪一次重定向提取 `rcode`。 */
@@ -499,7 +517,7 @@ class ChaoxingRemoteDataSource @Inject constructor(
             is AppResult.Success -> result.data
             is AppResult.Failure -> return result
         }
-        if (executor.isSessionExpiredRedirect(response)) {
+        if (executor.isSessionExpiredResponse(response)) {
             return AppResult.Failure(DomainError.Unauthorized("登录会话已过期，请重新登录"))
         }
         return AppResult.Success(htmlParser.parseCourseListHtml(response.body))
@@ -511,6 +529,7 @@ class ChaoxingRemoteDataSource @Inject constructor(
         private const val ATTEND_INFO_CONCURRENCY = 6
         private const val PAN_AUTH_EXPIRED_NEW_CODE = 200013
         private const val PAN_AUTH_EXPIRED_CODE = -10
+        private const val PAN_AUTH_FORBIDDEN_CODE = -4
         private const val DEFAULT_PHOTO_FILENAME = "sign_photo.jpg"
         private val MEDIA_TYPE_IMAGE_JPEG = "image/jpeg".toMediaType()
     }

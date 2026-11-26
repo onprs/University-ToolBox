@@ -339,6 +339,7 @@ private fun resolveSignStatusColors(
 ): Pair<androidx.compose.ui.graphics.Color, androidx.compose.ui.graphics.Color> = when (status) {
     ChaoxingUserSignStatus.SIGNED,
     ChaoxingUserSignStatus.TEACHER_SIGNED,
+    ChaoxingUserSignStatus.MAKEUP_SIGNED,
     -> ToolboxTheme.extendedColors.successContainer to ToolboxTheme.extendedColors.onSuccessContainer
 
     ChaoxingUserSignStatus.ABSENT ->

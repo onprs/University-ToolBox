@@ -142,8 +142,9 @@ class ChaoxingProtocolParserTest {
             }
         """.trimIndent()
 
-        val courseDto = ChaoxingJson.codec.decodeFromString<BackClazzDataResponseDto>(courseJson)
-        val courses = ChaoxingDomainMapper.toCourses(courseDto)
+        val courseDto = ChaoxingProtocolParsers.parseBackClazzData(courseJson)
+        assertNotNull(courseDto)
+        val courses = ChaoxingDomainMapper.toCourses(courseDto!!)
         assertEquals(1, courses.size)
         assertEquals("离散数学", courses[0].name)
         assertEquals("https://p.ananas.chaoxing.com/star4/demo/240_130c.jpg", courses[0].coverUrl)
@@ -187,8 +188,9 @@ class ChaoxingProtocolParserTest {
             }
         """.trimIndent()
 
-        val activeDto = ChaoxingJson.codec.decodeFromString<ActiveListResponseDto>(activeJson)
-        val activities = activeDto.data!!.activeList.map {
+        val activeDto = ChaoxingProtocolParsers.parseActiveList(activeJson)
+        assertNotNull(activeDto)
+        val activities = activeDto!!.data!!.activeList.map {
             ChaoxingDomainMapper.toActivity(it, courseId = 200000001L, clazzId = 100000001L)
         }
         assertEquals(ChaoxingSignType.LOCATION, activities[0].signType)
@@ -198,18 +200,24 @@ class ChaoxingProtocolParserTest {
         assertEquals(ChaoxingSignType.SIGN_OUT, activities[1].signType)
         assertTrue(activities[1].isSignOut)
         assertEquals(ChaoxingUserSignStatus.UNKNOWN, activities[1].userStatus)
+    }
 
-        val unsignedAttend = ChaoxingJson.codec.decodeFromString<AttendInfoResponseDto>(
+    @Test
+    fun `maps getAttendInfo including makeup status and masks account profile`() {
+        val unsignedAttend = ChaoxingProtocolParsers.parseAttendInfo(
             """{"result":1,"msg":"success","data":{"id":null,"activeId":7000000000001,"status":0}}""",
-        )
-        val absentAttend = ChaoxingJson.codec.decodeFromString<AttendInfoResponseDto>(
+        )!!
+        val absentAttend = ChaoxingProtocolParsers.parseAttendInfo(
             """{"result":1,"msg":"success","data":{"id":801,"activeId":7000000000002,"status":5}}""",
-        )
-        val signedAttend = ChaoxingJson.codec.decodeFromString<AttendInfoResponseDto>(
+        )!!
+        val signedAttend = ChaoxingProtocolParsers.parseAttendInfo(
             """
             {"result":1,"msg":"success","data":{"id":802,"activeId":7000000000003,"status":1,"deviceCode":"DC_1"}}
             """.trimIndent(),
-        )
+        )!!
+        val makeupAttend = ChaoxingProtocolParsers.parseAttendInfo(
+            """{"result":1,"msg":"success","data":{"id":803,"activeId":7000000000004,"status":3}}""",
+        )!!
         assertEquals(
             ChaoxingUserSignStatus.UNSIGNED,
             ChaoxingDomainMapper.toAttendRecord(unsignedAttend.data!!, 7000000000001L).userStatus,
@@ -221,6 +229,10 @@ class ChaoxingProtocolParserTest {
         val signedRecord = ChaoxingDomainMapper.toAttendRecord(signedAttend.data!!, 7000000000003L)
         assertEquals(ChaoxingUserSignStatus.SIGNED, signedRecord.userStatus)
         assertEquals("DC_1", signedRecord.deviceCode)
+
+        val makeupRecord = ChaoxingDomainMapper.toAttendRecord(makeupAttend.data!!, 7000000000004L)
+        assertEquals(ChaoxingUserSignStatus.MAKEUP_SIGNED, makeupRecord.userStatus)
+        assertTrue(makeupRecord.userStatus.isSignedSuccess)
 
         val profileDto = UserLogin4UnameMsgDto(
             uid = 123456L,
@@ -299,7 +311,7 @@ class ChaoxingProtocolParserTest {
               }
             }
         """.trimIndent()
-        val hiddenDto = ChaoxingJson.codec.decodeFromString<PptActiveInfoResponseDto>(hiddenCoordJson)
+        val hiddenDto = ChaoxingProtocolParsers.parsePptActiveInfo(hiddenCoordJson)!!
         val hiddenDetail = ChaoxingDomainMapper.toActiveDetail(hiddenDto.data!!)
         assertFalse(hiddenDetail.hasTargetCoordinates)
         assertNull(hiddenDetail.targetLatitude)
@@ -323,12 +335,139 @@ class ChaoxingProtocolParserTest {
               }
             }
         """.trimIndent()
-        val gdDto = ChaoxingJson.codec.decodeFromString<PptActiveInfoResponseDto>(gdOnlyJson)
+        val gdDto = ChaoxingProtocolParsers.parsePptActiveInfo(gdOnlyJson)!!
         val gdDetail = ChaoxingDomainMapper.toActiveDetail(gdDto.data!!)
         assertTrue(gdDetail.hasTargetCoordinates)
         assertNotNull(gdDetail.targetLatitude)
         assertNotNull(gdDetail.targetLongitude)
         assertTrue(kotlin.math.abs(gdDetail.targetLatitude!! - 39.915) < 0.01)
         assertTrue(kotlin.math.abs(gdDetail.targetLongitude!! - 116.404) < 0.01)
+    }
+
+    @Test
+    fun `tolerates ongoing empty string timestamps polymorphic envelopes and isolates bad array items`() {
+        val ongoingJavaJson = """
+            {
+              "result": 1,
+              "msg": "",
+              "errorMsg": null,
+              "data": {
+                "ext": "",
+                "readingDuration": "0",
+                "activeList": [
+                  {
+                    "id": 7000182422518,
+                    "activeType": 2,
+                    "type": 2,
+                    "otherId": "0",
+                    "status": 1,
+                    "userStatus": 1,
+                    "nameOne": "2026-11-26-5-6",
+                    "nameFour": "",
+                    "startTime": 1795672800000,
+                    "endTime": "",
+                    "releaseNum": null,
+                    "attendNum": null
+                  },
+                  {
+                    "id": "7000182422599",
+                    "activeType": "2",
+                    "otherId": "5",
+                    "status": "0",
+                    "nameOne": "定时签到码",
+                    "startTime": "",
+                    "endTime": ""
+                  },
+                  "unexpected_string_item",
+                  {"id": 0, "nameOne": "缺失主键脏条目"},
+                  {"id": "not_a_number", "nameOne": "损坏主键条目"}
+                ]
+              }
+            }
+        """.trimIndent()
+
+        val parsed = ChaoxingProtocolParsers.parseActiveList(ongoingJavaJson)
+        assertNotNull(parsed)
+        val items = parsed!!.data!!.activeList
+        assertEquals(2, items.size)
+
+        val ongoing = ChaoxingDomainMapper.toActivity(items[0], courseId = 269025030L, clazzId = 159288992L)
+        assertEquals(7000182422518L, ongoing.activeId)
+        assertEquals(ChaoxingActivityStatus.IN_PROGRESS, ongoing.activityStatus)
+        assertEquals(1795672800000L, ongoing.startTimeMs)
+        assertNull(ongoing.endTimeMs)
+
+        val unstarted = ChaoxingDomainMapper.toActivity(items[1], courseId = 269025030L, clazzId = 159288992L)
+        assertEquals(7000182422599L, unstarted.activeId)
+        assertEquals(ChaoxingActivityStatus.NOT_STARTED, unstarted.activityStatus)
+        assertEquals(ChaoxingSignType.SIGN_CODE, unstarted.signType)
+        assertEquals(0L, unstarted.startTimeMs)
+        assertNull(unstarted.endTimeMs)
+
+        // 错误态下 data 退化为 "" 或 []、msg 退化为纯文本时不得抛异常
+        val emptyStringData = ChaoxingProtocolParsers.parseActiveList(
+            """{"result":0,"data":"","errorMsg":"请登录后再试"}""",
+        )
+        assertNotNull(emptyStringData)
+        assertEquals(0, emptyStringData!!.result)
+        assertNull(emptyStringData.data)
+        assertEquals("请登录后再试", emptyStringData.errorMsg)
+
+        val stringMsgLogin = ChaoxingProtocolParsers.parseUserLogin4Uname(
+            """{"result":0,"msg":"非法请求,请重新登录"}""",
+        )
+        assertNotNull(stringMsgLogin)
+        assertNull(stringMsgLogin!!.msg)
+        assertEquals("非法请求,请重新登录", stringMsgLogin.errorMsg)
+
+        val forbiddenPan = ChaoxingProtocolParsers.parsePanUserValid(
+            """{"code":-4,"msg":"你没有权限","newCode":200007,"result":false}""",
+        )
+        assertNotNull(forbiddenPan)
+        assertFalse(forbiddenPan!!.result)
+        assertEquals(-4, forbiddenPan.code)
+    }
+
+    @Test
+    fun `parses nested content json signCode with location requirement and html or json sign responses`() {
+        val codeWithLocJson = """
+            {
+              "result": 1,
+              "data": {
+                "id": 9001,
+                "clazzid": 1001,
+                "name": "签到码叠加位置范围校验",
+                "activeType": 2,
+                "otherId": "5",
+                "status": 1,
+                "locationRange": "150.0",
+                "locationText": "信息楼B202",
+                "endTime": 1795676400000,
+                "content": "{\"ifopenAddress\":1,\"ifNeedVCode\":1,\"signOutDuration\":600000,\"timer\":{\"timerSignId\":8881}}"
+              }
+            }
+        """.trimIndent()
+        val dto = ChaoxingProtocolParsers.parsePptActiveInfo(codeWithLocJson)!!
+        val detail = ChaoxingDomainMapper.toActiveDetail(dto.data!!)
+        // otherId=5 即使开启 ifopenAddress=1 也必须保持 SIGN_CODE 类型，同时标记 requiresLocation=true
+        assertEquals(ChaoxingSignType.SIGN_CODE, detail.signType)
+        assertTrue(detail.requiresLocation)
+        assertTrue(detail.requiresCaptcha)
+        assertEquals(150, detail.locationRangeMeters)
+        assertEquals(1795676400000L, detail.endTimeMs)
+        assertEquals(600000L, detail.signOutDurationMs)
+        assertEquals(8881L, detail.signInId)
+
+        assertTrue(ChaoxingSignResponseParser.parse("success2") is ChaoxingSignRawOutcome.Success)
+        val jsonFail = ChaoxingSignResponseParser.parse("""{"result":0,"errorMsg":"签到已结束"}""")
+        assertEquals(ChaoxingSignRawOutcome.Ended("签到已结束"), jsonFail)
+
+        val htmlStatusFail = ChaoxingSignResponseParser.parse(
+            """<html><body><span id="statuscontent">抱歉，已过签到截止时间</span></body></html>""",
+        )
+        assertEquals(ChaoxingSignRawOutcome.Ended("抱歉，已过签到截止时间"), htmlStatusFail)
+
+        val loginHtml = """<!DOCTYPE html><html><head><title>用户登录</title></head><body>/fanyalogin</body></html>"""
+        assertTrue(ChaoxingSafeJson.looksLikeLoginHtml(loginHtml))
     }
 }

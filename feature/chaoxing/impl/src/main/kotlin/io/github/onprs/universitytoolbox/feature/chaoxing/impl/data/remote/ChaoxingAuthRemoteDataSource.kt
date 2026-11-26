@@ -83,7 +83,7 @@ class ChaoxingAuthRemoteDataSource @Inject constructor(
             is AppResult.Success -> result.data
             is AppResult.Failure -> return@withContext result
         }
-        val dto = executor.decodeJson<FanyaLoginResponseDto>(response.body)
+        val dto = ChaoxingProtocolParsers.parseFanyaLogin(response.body)
             ?: return@withContext AppResult.Failure(
                 DomainError.Network("登录响应解析失败", httpCode = response.code),
             )
@@ -165,7 +165,7 @@ class ChaoxingAuthRemoteDataSource @Inject constructor(
             is AppResult.Success -> result.data
             is AppResult.Failure -> return@withContext result
         }
-        val dto = executor.decodeJson<QrAuthStatusResponseDto>(response.body)
+        val dto = ChaoxingProtocolParsers.parseQrAuthStatus(response.body)
             ?: return@withContext AppResult.Failure(DomainError.Network("扫码状态解析失败"))
 
         if (dto.status) {
@@ -209,10 +209,10 @@ class ChaoxingAuthRemoteDataSource @Inject constructor(
                 is AppResult.Success -> result.data
                 is AppResult.Failure -> return@withContext result
             }
-            if (executor.isSessionExpiredRedirect(response)) {
+            if (executor.isSessionExpiredResponse(response)) {
                 return@withContext AppResult.Failure(DomainError.Unauthorized("登录会话已过期，请重新登录"))
             }
-            val dto = executor.decodeJson<UserLogin4UnameResponseDto>(response.body)
+            val dto = ChaoxingProtocolParsers.parseUserLogin4Uname(response.body)
                 ?: return@withContext AppResult.Failure(DomainError.Network("用户信息解析失败"))
 
             if (dto.result != 1 || dto.msg == null) {
@@ -247,7 +247,7 @@ class ChaoxingAuthRemoteDataSource @Inject constructor(
                 is AppResult.Success -> result.data
                 is AppResult.Failure -> return@withContext result
             }
-            val dto = executor.decodeJson<SearchUnisResponseDto>(response.body)
+            val dto = ChaoxingProtocolParsers.parseSearchUnis(response.body)
                 ?: return@withContext AppResult.Failure(DomainError.Network("学校列表解析失败"))
 
             val list = dto.froms.mapNotNull { item ->

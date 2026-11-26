@@ -41,6 +41,12 @@ class ChaoxingDeviceAndShareTest {
         val (parsedModel, parsedUid) = ChaoxingDeviceIdentityHelper.parseUserAgentIdentity(ua)
         assertEquals(model, parsedModel)
         assertEquals(uniqueId, parsedUid)
+
+        val dalvikOnlyUa = "Dalvik/2.1.0 (Linux; U; Android 16; PKG110 Build/AP3A.240905) " +
+            "com.chaoxing.mobile/ChaoXingStudy_3_6.8.1_android_phone (@Kalimdor)_abcdef0123456789"
+        val (fallbackModel, fallbackUid) = ChaoxingDeviceIdentityHelper.parseUserAgentIdentity(dalvikOnlyUa)
+        assertEquals("PKG110", fallbackModel)
+        assertEquals("abcdef0123456789", fallbackUid)
     }
 
     @Test
